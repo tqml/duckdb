@@ -4,16 +4,6 @@
 //===--------------------------------------------------------------------===//
 =#
 
-_is_vector_expression(x::Expr) = x.head == :vect
-_is_vector_expression(x) = false
-
-
-macro _wrap_scalar_function(func_expr, return_type::Symbol, parameter_types::Expr)
-    _is_vector_expression(parameter_types) || throw(ArgumentError("parameter_types must be a vector expression"))
-    vector_elements = parameter_types.args
-    return _wrap_scalar_function(func_expr, return_type, vector_elements)
-end
-
 function _wrap_scalar_function(func, return_type, parameter_types)
     # Create a scalar function with fixed return and parameter types
     args = [Symbol("a$i") for i in 1:length(parameter_types)]
@@ -191,87 +181,6 @@ function _destroy_scalar_function(func::ScalarFunction)
     return
 end
 
-# function create_scalar_function(
-#     con::Connection,
-#     name::AbstractString,
-#     parameter_types::Vector{LogicalType},
-#     return_type::LogicalType,
-#     func::Function
-# )
-
-#     fun = ScalarFunction(name, parameter_types, return_type, func)
-#     result = duckdb_register_scalar_function(con.handle, fun.handle)
-#     if result != DuckDBSuccess
-#         throw(QueryException(string("Failed to register scalar function \"", name, "\"")))
-#     end
-#     push!(con.db.functions, fun) # TODO should this be a different list?
-#     return
-# end
-
-"""
-Create a scalar function in the database.
-
-# Arguments
-- `db::DB`: The database object.
-- `name::AbstractString`: The name of the function.
-- `parameters::Vector{DataType}`: The types of the parameters.
-- `return_type::DataType`: The return type of the function.
-- `func::Function`: The function to call.
-
-# Example
-```jldoctest
-using DuckDB
-
-db = DuckDB.DB(":memory:")
-function add(a::Int64, b::Int64)
-    return a + b
-end
-
-DuckDB.create_scalar_function(db, "add", [Int64, Int64], Int64, add)
-```
-
-# Note
-- The function must be a Julia function that takes the same number of arguments as the length of `parameters`.
-- The function must return a value of the same type as `return_type`.
-
-
-"""
-function create_scalar_function(
-    con::Connection,
-    name::AbstractString,
-    parameters::Vector{DataType},
-    return_type::DataType,
-    func::Function
-)
-
-    parameter_types::Vector{LogicalType} = Vector()
-    for parameter_type in parameters
-        push!(parameter_types, create_logical_type(parameter_type))
-    end
-
-    # Define and register the scalar function
-    fun = ScalarFunction(name, parameter_types, create_logical_type(return_type), func, nothing)
-
-    # define the wrapper for the function
-    duckdb_scalar_function_set_function(
-        fun.handle,
-        @cfunction(_scalar_function, Cvoid, (duckdb_function_info, duckdb_data_chunk, duckdb_vector))
-    )
-
-    result = duckdb_register_scalar_function(con.handle, fun.handle)
-    if result != DuckDBSuccess
-        throw(QueryException(string("Failed to register scalar function \"", name, "\"")))
-    end
-
-    push!(con.db.functions, fun) # TODO should this be a different list?
-    return
-end
-
-
-
-create_scalar_function(db::DB, name, parameters, return_type, func) =
-    create_scalar_function(db.main_connection, name, parameters, return_type, func)
-
 
 
 """
@@ -310,11 +219,6 @@ macro create_scalar_function(name, parameters, return_type, func)
         fun
     end
 end
-
-
-
-
-
 
 
 function register_scalar_function(con::Connection, fun::ScalarFunction)
