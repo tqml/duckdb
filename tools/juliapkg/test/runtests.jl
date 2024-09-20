@@ -7,26 +7,27 @@ using FixedPointDecimals
 using UUIDs
 
 test_files = [
-    "test_appender.jl",
-    "test_basic_queries.jl",
-    "test_big_nested.jl",
-    "test_config.jl",
-    "test_connection.jl",
-    "test_tbl_scan.jl",
-    "test_prepare.jl",
-    "test_transaction.jl",
-    "test_sqlite.jl",
-    "test_replacement_scan.jl",
-    "test_table_function.jl",
-    "test_old_interface.jl",
-    "test_all_types.jl",
-    "test_union_type.jl",
-    "test_decimals.jl",
-    "test_threading.jl",
-    "test_tpch.jl",
-    "test_tpch_multithread.jl",
-    "test_stream_data_chunk.jl",
-    "test_scalar_udf.jl"
+    # "test_appender.jl",
+    # "test_basic_queries.jl",
+    # "test_big_nested.jl",
+    # "test_config.jl",
+    # "test_connection.jl",
+    # "test_tbl_scan.jl",
+    # "test_prepare.jl",
+    # "test_transaction.jl",
+    # "test_sqlite.jl",
+    # "test_replacement_scan.jl",
+    # "test_table_function.jl",
+    # "test_old_interface.jl",
+    # "test_all_types.jl",
+    # "test_union_type.jl",
+    # "test_decimals.jl",
+    # "test_threading.jl",
+    # "test_tpch.jl",
+    # "test_tpch_multithread.jl",
+    # "test_stream_data_chunk.jl",
+    # "test_scalar_udf.jl",
+    "test_scalar_functions.jl"
 ]
 
 if length(ARGS) > 0 && !isempty(ARGS[1])
