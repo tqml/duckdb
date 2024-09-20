@@ -57,14 +57,18 @@ macro _create_duckdb_scalar_function_wrapper(parameter_types, return_type)
         local loop_conversion_functions = get_conversion_loop_function.(logical_parameter_types)
 
         (info::duckdb_function_info, chunk::duckdb_data_chunk, output::duckdb_vector) -> begin
+
+
             scalar_function::ScalarFunction = unsafe_pointer_to_objref(duckdb_scalar_function_get_extra_info(info))
+            # TODO the below types are not used and could be removed if the wrapper works fine.
+            #param_types::Vector{LogicalType} = scalar_function.parameters
+            #logical_return_type::LogicalType = scalar_function.return_type
+
             data_chunk = DataChunk(chunk, false) # create a data chunk object, that does not own the data
             data_chunk_size = get_size(data_chunk) # get the size of the columns in the data chunk
             println("Get output vec")
             output_vec = Vec(output)
             println("output vec done")
-            param_types::Vector{LogicalType} = scalar_function.parameters
-            logical_return_type::LogicalType = scalar_function.return_type
             n_cols = get_column_count(data_chunk)
             #result_array = get_array(output_vec, $(true_return_type))
 
