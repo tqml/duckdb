@@ -18,20 +18,24 @@ end
 
 table_result_type(tbl, entry) = Core.Compiler.typesubtract(eltype(tbl[entry]), Missing, 1)
 
-julia_to_duck_type(::Type{Date}) = Int32
-julia_to_duck_type(::Type{Time}) = Int64
-julia_to_duck_type(::Type{DateTime}) = Int64
-julia_to_duck_type(::Type{T}) where {T} = T
+# TODO Remove
+# julia_to_duck_type(::Type{Date}) = Int32
+# julia_to_duck_type(::Type{Time}) = Int64
+# julia_to_duck_type(::Type{DateTime}) = Int64
+# julia_to_duck_type(::Type{T}) where {T} = T
 
-value_to_duckdb(val::Date) = convert(Int32, Dates.date2epochdays(val) - ROUNDING_EPOCH_TO_UNIX_EPOCH_DAYS)
-value_to_duckdb(val::Time) = convert(Int64, Dates.value(val) / 1000)
-value_to_duckdb(val::DateTime) = convert(Int64, (Dates.datetime2epochms(val) - ROUNDING_EPOCH_TO_UNIX_EPOCH_MS) * 1000)
+# TODO Remove
+#value_to_duckdb(val::Date) = convert(Int32, Dates.date2epochdays(val) - ROUNDING_EPOCH_TO_UNIX_EPOCH_DAYS)
+#value_to_duckdb(val::Time) = convert(Int64, Dates.value(val) / 1000)
+#value_to_duckdb(val::DateTime) = convert(Int64, (Dates.datetime2epochms(val) - ROUNDING_EPOCH_TO_UNIX_EPOCH_MS) * 1000)
 value_to_duckdb(val::AbstractString) = throw(
     NotImplementedException(
         "Cannot use value_to_duckdb to convert string values - use DuckDB.assign_string_element on a vector instead"
     )
 )
-value_to_duckdb(val) = val
+#value_to_duckdb(val) = val
+value_to_duckdb(val::T) where {T} = convert(T, val)
+
 
 function tbl_scan_column(
     input_column::AbstractVector{JL_TYPE},

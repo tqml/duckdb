@@ -121,12 +121,35 @@ function VecReader(vec::Vec, logical_type::LogicalType, ::Type{T}, N = VECTOR_SI
     end
 end
 
+function Base.getindex(reader::VecReader, index)
+    # if index < 1 || index > reader.N
+    #     throw(BoundsError(reader, index))
+    # end
+
+    if all_valid(reader.validity_mask)
+        x = reader.getindex_func(reader.data, index)
+        return reader.conversion_func(x)
+    else
+        if isvalid(reader.validity_mask, index)
+            x = reader.getindex_func(reader.data, index)
+            return reader.conversion_func(x)
+        else
+            return missing
+        end
+    end
+end
+
+function julia_eltype(r::VecReader)
+    return duckdb_type_to_julia_type(r.logical_type, all_valid(r.validity_mask))
+end
+
 
 function _create_vecreader_simple(vec::Vec, logical_type::LogicalType, ::Type{T}, N) where {T}
     type_id = get_type_id(logical_type)
     internal_type = duckdb_type_to_internal_type(type_id)
     data = get_array(vec, internal_type, N)
-    conversion_func = x -> convert(T, x)
+    #conversion_func = x -> convert(T, x)
+    conversion_func = identity
     getindex_func = getindex
     validity_mask = get_validity(vec, N)
     return VecReader(vec, Int(N), logical_type, T, conversion_func, getindex_func, validity_mask, data)
@@ -217,77 +240,94 @@ function _getindex_dict(data, index)
     return Dict(K)
 end
 
-function Base.getindex(reader::VecReader, index)
-    if index < 1 || index > reader.N
-        throw(BoundsError(reader, index))
-    end
 
-    if all_valid(reader.validity_mask)
-        x = reader.getindex_func(reader.data, index)
-        return reader.conversion_func(x)
-    else
-        if isvalid(reader.validity_mask, index)
-            x = reader.getindex_func(reader.data, index)
-            return reader.conversion_func(x)
-        else
-            return missing
-        end
-    end
-end
-
-function julia_eltype(r::VecReader)
-    return duckdb_type_to_julia_type(r.logical_type, all_valid(r.validity_mask))
-end
 
 # %% --------------------------------------------------------
 #        Writer Interface
 #------------------------------------------------------------
 
-mutable struct VecWriter{T, D}
+mutable struct VecWriter{T, D, F <: Function}
     vec::Vec
     N::Int
     logical_type::LogicalType
-    julia_type::T
-    setindex_func::Function
+    julia_type::Type{T}
+    setindex_func::F
     validity_mask::ValidityMask
     data::D
 end
 
 
+# function VecWriter(vec::Vec, logical_type::LogicalType, ::Type{T}, N = VECTOR_SIZE) where {T}
+#     type_id = get_type_id(logical_type)
+#     if type_id == DUCKDB_TYPE_VARCHAR
+#         return _create_vecwriter_string(vec, logical_type, T, N)
+#     elseif type_id == DUCKDB_TYPE_STRUCT
+#         return _create_vecwriter_struct(vec, logical_type, T, N)
+#     elseif type_id == DUCKDB_TYPE_LIST
+#         return _create_vecwriter_list(vec, logical_type, T, N)
+#     elseif type_id == DUCKDB_TYPE_ARRAY
+#         return _create_vecwriter_array(vec, logical_type, T, N)
+#     elseif is_complex_type(logical_type)
+#         throw(NotImplementedException("Complex types are not supported"))
+#     else
+#         return _create_vecwriter_simple(vec, logical_type, T, N)
+#     end
+# end
+
+VecWriter(vec::Vec, logical_type::LogicalType, ::Type{T}, N) where {T<:Integer} = _create_vecwriter_simple(vec, logical_type, T, N)
+VecWriter(vec::Vec, logical_type::LogicalType, ::Type{T}, N) where {T<:AbstractFloat} = _create_vecwriter_simple(vec, logical_type, T, N)
+VecWriter(vec::Vec, logical_type::LogicalType, ::Type{T}, N) where {T <: Date}  = _create_vecwriter_simple(vec, logical_type, T, N)
+VecWriter(vec::Vec, logical_type::LogicalType, ::Type{T}, N) where {T <: Time}   = _create_vecwriter_simple(vec, logical_type, T, N)
+VecWriter(vec::Vec, logical_type::LogicalType, ::Type{T}, N) where {T <: DateTime}   = _create_vecwriter_simple(vec, logical_type, T, N)
+VecWriter(vec::Vec, logical_type::LogicalType, ::Type{T}, N) where {T <: Union{Period, Dates.CompoundPeriod}}   = _create_vecwriter_simple(vec, logical_type, T, N)
+
 function VecWriter(vec::Vec, logical_type::LogicalType, ::Type{T}, N = VECTOR_SIZE) where {T}
-    type_id = get_type_id(logical_type)
-    if type_id == DUCKDB_TYPE_VARCHAR
-        return _create_vecwriter_string(vec, logical_type, T, N)
-    elseif type_id == DUCKDB_TYPE_STRUCT
+    if isstructtype(T)
         return _create_vecwriter_struct(vec, logical_type, T, N)
-    elseif type_id == DUCKDB_TYPE_LIST
-        return _create_vecwriter_list(vec, logical_type, T, N)
-    elseif type_id == DUCKDB_TYPE_ARRAY
-        return _create_vecwriter_array(vec, logical_type, T, N)
-    elseif is_complex_type(logical_type)
-        throw(NotImplementedException("Complex types are not supported"))
     else
         return _create_vecwriter_simple(vec, logical_type, T, N)
     end
 end
 
+function VecWriter(vec::Vec, logical_type::LogicalType, ::Type{T}, N = VECTOR_SIZE) where {T<:AbstractString}
+    return _create_vecwriter_string(vec, logical_type, T, N)
+end
+
+function VecWriter(vec::Vec, logical_type::LogicalType, ::Type{T}, N = VECTOR_SIZE) where {T<:AbstractArray}
+    return _create_vecwriter_list(vec, logical_type, T, N)
+end
+
+function VecWriter(vec::Vec, logical_type::LogicalType, ::Type{T}, N = VECTOR_SIZE) where {T<:NamedTuple}
+    return _create_vecwriter_struct(vec, logical_type, T, N)
+end
+
+function VecWriter(vec::Vec, logical_type::LogicalType, ::Type{T}, N = VECTOR_SIZE) where {T<:AbstractDict}
+    return _create_vecwriter_dict(vec, logical_type, T, N)
+end
+
+function VecWriter(vec::Vec, logical_type::LogicalType, ::Type{T}, N = VECTOR_SIZE) where {T<:Tuple}
+    return _create_vecwriter_array(vec, logical_type, T, N)
+end
+
 Base.length(writer::VecWriter) = writer.N
-function Base.setindex!(writer::VecWriter, value, index)
+function Base.setindex!(writer::VecWriter{T}, value, index::Integer) where {T}
     if index < 1 || index > writer.N
         throw(BoundsError(writer, index))
     end
     if ismissing(value)
         setinvalid(writer.validity_mask, index)
     else
-        return writer.setindex_func(writer.data, value, index)
+        writer.setindex_func(writer.data, value, index)
     end
+    return nothing
 end
 
 # %% --- primitive types ------------------------------------------ #
 function _create_vecwriter_simple(vec::Vec, logical_type::LogicalType, ::Type{T}, N) where {T}
     type_id = get_type_id(logical_type)
-    internal_type = duckdb_type_to_internal_type(type_id)
-    data = get_array(vec, internal_type, N)
+    #internal_type = duckdb_type_to_internal_type(type_id)
+    internal_type_static = julia_to_duck_type(T)
+    data = get_array(vec, internal_type_static, N)
     setindex_func = setindex!
     validity_mask = get_validity(vec, N)
     return VecWriter(vec, Int(N), logical_type, T, setindex_func, validity_mask, data)
@@ -336,19 +376,52 @@ end
 function _create_vecwriter_struct(vec::Vec, logical_type::LogicalType, ::Type{T}, N) where {T}
     type_id = get_type_id(logical_type)
     K = get_struct_child_count(logical_type)
-    names = Vector{Symbol}()
-    writers = Vector{VecWriter}()
-    for k in 1:K
-        child_type = get_struct_child_type(logical_type, k)
-        child_vec = struct_child(vec, k)
-        child_writer = VecWriter(child_vec, child_type, T, N)
-        push!(writers, child_writer)
 
-        child_name = Symbol(get_struct_child_name(logical_type, k))
-        push!(names, child_name)
+    # TODO use propertynames?
+    names = fieldnames(T)
+    types_tuple = fieldtypes(T)
+    Nf = length(names)
+
+    @show names types_tuple
+
+    if K != Nf
+        throw(ArgumentError(string("Internal Conversion Error: Struct field count mismatch: ", K, " != ", Nf)))
     end
-    names_tuple = Tuple(name for name in names)
-    data = NamedTuple{names_tuple}(writers)
+    
+    for i in 1:K
+        s_name = get_struct_child_name(logical_type, i)
+        if string(names[i]) != s_name 
+            throw(ArgumentError(string("Internal Conversion Error: Struct field name mismatch: ", names[i], " != ", s_name)))
+        end
+    end
+
+    for i in 1:K
+        s_type = get_struct_child_type(logical_type, i)
+        s_type_id = get_type_id(s_type)
+        lt::LogicalType = create_logical_type(types_tuple[i])
+        lt_id = get_type_id(lt)
+        if lt_id != s_type_id
+            throw(ArgumentError(string("Internal Conversion Error: Struct field type mismatch: ", lt_id, " != ", s_type_id)))
+        end
+    end
+
+    
+    writers = Tuple(VecWriter(
+            struct_child(vec, k), 
+            get_struct_child_type(logical_type, k), 
+            fieldtype(T, name), 
+            N) 
+        for (k,name) in enumerate(names)
+    )
+    # writers = Tuple(VecWriter(
+    #         struct_child(vec, k), 
+    #         get_struct_child_type(logical_type, k), 
+    #         types_tuple[k],
+    #         N) 
+    #     for k in 1:Nf
+    # )
+
+    data = NamedTuple{names}(writers)
     setindex_func = setindex_struct!
     validity_mask = get_validity(vec, N)
     return VecWriter(vec, Int(N), logical_type, T, setindex_func, validity_mask, data)

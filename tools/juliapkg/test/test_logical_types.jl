@@ -28,7 +28,6 @@ _random_element(::Type{Dates.Period}, size) = random_period()
 _random_element(::Type{Dates.CompoundPeriod}, size) = random_compound_period()
 _random_element(::Type{NTuple{N, T}}, size) where {N, T} = Tuple(_random_element(T, size) for _ in 1:N)
 _random_element(::Type{Vector{T}}, size) where {T} = [_random_element(T, size) for _ in 1:size]
-
 _random_element(::Type{MyStruct}, size) = MyStruct(rand(Int), rand(), _random_element(NTuple{3, Int}, size))
 
 # @testset "Logical Types" begin
@@ -564,90 +563,91 @@ _random_element(::Type{MyStruct}, size) = MyStruct(rand(Int), rand(), _random_el
 # end
 
 
-# @testset "Conversions Julia to Internal to Julia: Combined Multi Chunk" begin
-#     N = 2048
+@testset "Conversions Julia to Internal to Julia: Combined Multi Chunk" begin
+    N = 2048
 
-#     types = [
-#         Bool,
-#         Int8,
-#         Int16,
-#         Int32,
-#         Int64,
-#         Int128,
-#         UInt8,
-#         UInt16,
-#         UInt32,
-#         UInt64,
-#         UInt128,
-#         Float32,
-#         Float64,
-#         String,
-#         Date,
-#         Time,
-#         DateTime,
-#         Dates.CompoundPeriod,
-#         NTuple{10, Int},
-#         Vector{Int},
-#         MyStruct
-#     ]
-#     t_reads = Float64[]
-#     t_writes = Float64[]
-#     t_baselines = Float64[]
-#     for T in types
-#         X = [_random_element(T, 5) for i in 1:N]
-#         julia_type_in = eltype(X)
-#         logical_type = DuckDB.create_logical_type(julia_type_in)
+    types = [
+        Bool,
+        Int8,
+        Int16,
+        Int32,
+        Int64,
+        Int128,
+        UInt8,
+        UInt16,
+        UInt32,
+        UInt64,
+        UInt128,
+        Float32,
+        Float64,
+        String,
+        Date,
+        Time,
+        DateTime,
+        Dates.CompoundPeriod,
+        NTuple{10, Int},
+        Vector{Int},
+        MyStruct
+    ]
+    t_reads = Float64[]
+    t_writes = Float64[]
+    t_baselines = Float64[]
+    for T in types
+        println("Type: ", T)
+        X = [_random_element(T, 5) for i in 1:N]
+        julia_type_in = eltype(X)
+        logical_type = DuckDB.create_logical_type(julia_type_in)
 
-#         chunks = [DuckDB.DataChunk([logical_type]) for _ in 1:10] # 10 chunks
-#         DuckDB.set_size.(chunks, N)
+        chunks = [DuckDB.DataChunk([logical_type]) for _ in 1:10] # 10 chunks
+        DuckDB.set_size.(chunks, N)
 
-#         Base.GC.@preserve chunks begin
+        Base.GC.@preserve chunks begin
+            t_write = @elapsed for chunk in chunks
+                vec = DuckDB.get_vector(chunk, 1)
+                writer = DuckDB.VecWriter(vec, logical_type, julia_type_in, N)
+                @show writer.julia_type julia_type_in
+                sizehint!(writer, N)
+                for i in 1:N
+                    writer[i] = X[i]
+                end
+            end
 
-#             t_write = @elapsed for chunk in chunks
-#                 vec = DuckDB.get_vector(chunk, 1)
-#                 writer = DuckDB.VecWriter(vec, logical_type, julia_type_in, N)
-#                 sizehint!(writer, N)
-#                 for i in 1:N
-#                     writer[i] = X[i]
-#                 end
-#             end
+            t_read = @elapsed for chunk in chunks
+                vec = DuckDB.get_vector(chunk, 1)
+                reader = DuckDB.VecReader(vec, logical_type, julia_type_in, N)
+                julia_type_out = DuckDB.julia_eltype(reader)
+                out = Vector{julia_type_out}(undef, N)
+                for i in 1:N
+                    out[i] = reader[i]
+                end
+            end
 
-#             t_read = @elapsed for chunk in chunks
-#                 vec = DuckDB.get_vector(chunk, 1)
-#                 reader = DuckDB.VecReader(vec, logical_type, julia_type_in, N)
-#                 julia_type_out = DuckDB.julia_eltype(reader)
-#                 out = Vector{julia_type_out}(undef, N)
-#                 for i in 1:N
-#                     out[i] = reader[i]
-#                 end
-#             end
+            if T <: Period || T <: Dates.CompoundPeriod
+                out = [Dates.canonicalize(x) for x in out]
+            end
 
-#             if T <: Period || T <: Dates.CompoundPeriod
-#                 out = [Dates.canonicalize(x) for x in out]
-#             end
+            @test isequal(out, X)
+            t_baseline = 0.0
+            if !(T <: Tuple) && !(T <: MyStruct)
+                # Tuple not supported
+                try
+                    data = DuckDB.ColumnConversionData(chunks, 1, logical_type, nothing)
+                    t_baseline = @elapsed DuckDB.convert_column(data)
+                catch e
+                    println("Skipped baseline for type ", T, ", error:", e)
+                end
+            end
+            push!(t_reads, t_read)
+            push!(t_writes, t_write)
+            push!(t_baselines, t_baseline)
 
-#             @test isequal(out, X)
-#             t_baseline = 0.0
-#             if !(T <: Tuple) && !(T <: MyStruct)
-#                 # Tuple not supported
-#                 try
-#                     data = DuckDB.ColumnConversionData(chunks, 1, logical_type, nothing)
-#                     t_baseline = @elapsed DuckDB.convert_column(data)
-#                 catch e
-#                     println("Skipped baseline for type ", T, ", error:", e)
-#                 end
-#             end
-#             push!(t_reads, t_read)
-#             push!(t_writes, t_write)
-#             push!(t_baselines, t_baseline)
+            #println("Type: ", T, "\t Read: \t\t", t_read, "\t\t Write: \t\t", t_write, "\t\t Baseline: \t\t", t_baseline)
+        end
+    end
 
-#             #println("Type: ", T, "\t Read: \t\t", t_read, "\t\t Write: \t\t", t_write, "\t\t Baseline: \t\t", t_baseline)
-#         end
-#     end
-
-#     df = DataFrame(Type = types, Read = t_reads, Write = t_writes, Baseline = t_baselines)
-#     PrettyTables.pretty_table(df)
-# end
+    df = DataFrame(Type = types, Read = t_reads, Write = t_writes, Baseline = t_baselines)
+    PrettyTables.pretty_table(df)
+end
 
 
 @testset "New ScalarFunction" begin

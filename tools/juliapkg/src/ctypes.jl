@@ -517,6 +517,24 @@ function duckdb_type_to_julia_type(x, wrap_missing = true)
     return JULIA_TYPE_MAP[type_id]
 end
 
+
+
+# Julia Types to Internal Types - Only possible for primitive types
+julia_to_duck_type(::Type{Date}) = duckdb_date
+julia_to_duck_type(::Type{Time}) = duckdb_time
+julia_to_duck_type(::Type{DateTime}) = duckdb_timestamp
+julia_to_duck_type(::Type{Period}) = duckdb_interval
+julia_to_duck_type(::Type{Dates.CompoundPeriod}) = duckdb_interval
+julia_to_duck_type(::Type{UUID}) = duckdb_hugeint
+julia_to_duck_type(::Type{Int128}) = duckdb_hugeint
+julia_to_duck_type(::Type{UInt128}) = duckdb_uhugeint
+julia_to_duck_type(::Type{String}) = duckdb_string_t
+julia_to_duck_type(::Type{T}) where {T} = T
+
+
+
+
+
 sym(ptr) = ccall(:jl_symbol, Ref{Symbol}, (Ptr{UInt8},), ptr)
 sym(ptr::Cstring) = ccall(:jl_symbol, Ref{Symbol}, (Cstring,), ptr)
 
