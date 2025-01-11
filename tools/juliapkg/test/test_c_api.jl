@@ -10,3 +10,21 @@
     @test sizeof(DuckDB.duckdb_string_t) == sizeof(DuckDB.duckdb_string_t_ptr)
 
 end
+
+@testset "Periods & Conversions" begin
+    N = 2048
+    X = [random_compound_period() for i in 1:N]
+    julia_type = eltype(X)
+    internal_type = DuckDB.duckdb_interval
+    Y = [convert(internal_type, x) for x in X]
+    Z = [Dates.canonicalize(convert(julia_type, y)) for y in Y]
+    @test isequal(X, Z)
+
+    X = [random_period() for i in 1:N]
+    julia_type = eltype(X)
+    julia_type_out = Dates.CompoundPeriod
+    internal_type = DuckDB.duckdb_interval
+    Y = [convert(internal_type, x) for x in X]
+    Z = [Dates.canonicalize(convert(julia_type_out, y)) for y in Y]
+    @test isequal(X, Z)
+end

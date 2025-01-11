@@ -19,3 +19,12 @@ FixedPointDecimals = "0.4, 0.5"
 Tables = "1.7"
 WeakRefStrings = "1.4"
 julia = "1.6"
+StaticArrays = "1.0"
+
+
+[weakdeps]
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+
+[extensions]
+DuckDBStaticArraysExt = "StaticArrays"
+

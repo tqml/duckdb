@@ -360,7 +360,7 @@ struct duckdb_result
     internal_data::Ptr{Cvoid}
 end
 
-INTERNAL_TYPE_MAP = Dict(
+const INTERNAL_TYPE_MAP = Dict(
     DUCKDB_TYPE_BOOLEAN => Bool,
     DUCKDB_TYPE_TINYINT => Int8,
     DUCKDB_TYPE_SMALLINT => Int16,
@@ -394,7 +394,7 @@ INTERNAL_TYPE_MAP = Dict(
     DUCKDB_TYPE_UNION => Cvoid
 )
 
-JULIA_TYPE_MAP = Dict(
+const JULIA_TYPE_MAP = Dict(
     DUCKDB_TYPE_INVALID => Missing,
     DUCKDB_TYPE_BOOLEAN => Bool,
     DUCKDB_TYPE_TINYINT => Int8,
@@ -434,7 +434,22 @@ function duckdb_type_to_internal_type(x::DUCKDB_TYPE)
     return INTERNAL_TYPE_MAP[x]
 end
 
-function duckdb_type_to_julia_type(x)
+
+function duckdb_type_to_internal_type(x::DUCKDB_TYPE, logical_type)
+    type_id = get_type_id(logical_type)
+    if x == DUCKDB_TYPE_ARRAY
+        N = get_array_child_size(logical_type)
+        child_type = get_array_child_type(logical_type)
+        child_type_id = get_type_id(child_type)
+        return duckdb_type_to_internal_type(child_type_id, child_type)
+    else
+        return duckdb_type_to_internal_type(x)
+    end
+end
+
+_wrap_missing(x, yes) = ifelse(yes, Union{Missing, x}, x)
+
+function duckdb_type_to_julia_type(x, wrap_missing = true)
     type_id = get_type_id(x)
     if type_id == DUCKDB_TYPE_DECIMAL
         internal_type_id = get_internal_type_id(x)
@@ -452,6 +467,13 @@ function duckdb_type_to_julia_type(x)
         end
     elseif type_id == DUCKDB_TYPE_LIST
         return Vector{Union{Missing, duckdb_type_to_julia_type(get_list_child_type(x))}}
+        #return _wrap_missing(Vector{duckdb_type_to_julia_type(get_list_child_type(x))}, true)
+    elseif type_id == DUCKDB_TYPE_ARRAY
+        N_child = get_array_child_size(x)
+        child_type = get_array_child_type(x)
+        child_type_julia = duckdb_type_to_julia_type(child_type, false)
+        #return _wrap_missing(NTuple{N_child, child_type_julia}, wrap_missing)
+        return _wrap_missing(NTuple{N_child, child_type_julia}, wrap_missing)
     elseif type_id == DUCKDB_TYPE_STRUCT
         child_count = get_struct_child_count(x)
         struct_names::Vector{Symbol} = Vector()
@@ -461,6 +483,25 @@ function duckdb_type_to_julia_type(x)
         end
         struct_names_tuple = Tuple(x for x in struct_names)
         return Union{Missing, NamedTuple{struct_names_tuple}}
+    # elseif type_id == DUCKDB_TYPE_STRUCT
+    #     child_count = get_struct_child_count(x)
+    #     struct_names::Vector{Symbol} = Vector()
+    #     for i in 1:child_count
+    #         child_name::Symbol = Symbol(get_struct_child_name(x, i))
+    #         push!(struct_names, child_name)
+    #     end
+    #     # TODO finish 
+    #     struct_types::Vector{DataType} = Vector()
+    #     for i in 1:child_count
+    #         child_type = get_struct_child_type(x, i)
+    #         child_type_julia = duckdb_type_to_julia_type(child_type, false)
+    #         push!(struct_types, child_type_julia)
+    #     end
+    #     struct_names_tuple = Tuple(x for x in struct_names)
+    #     struct_types_tuple = Tuple(x for x in struct_types)
+    #     return _wrap_missing(NamedTuple{struct_names_tuple, Tuple{struct_types_tuple...}}, wrap_missing)
+    #     #return Union{Missing, NamedTuple{struct_names_tuple,Tuple{struct_types_tuple...}}}
+    #     #return Union{Missing, NamedTuple{struct_names_tuple}}
     elseif type_id == DUCKDB_TYPE_UNION
         member_count = get_union_member_count(x)
         member_types::Vector{DataType} = Vector()
@@ -646,3 +687,28 @@ end
 # DECIMALS
 Base.convert(::Type{Float64}, val::duckdb_decimal) = duckdb_decimal_to_double(val)
 Base.convert(::Type{duckdb_decimal}, val::Float64) = duckdb_double_to_decimal(val)
+
+
+
+function Base.convert(::Type{String}, val::Union{duckdb_string_t, duckdb_string_t_ptr})
+    if val.length <= STRING_INLINE_LENGTH
+        # Is inline string
+        if val isa duckdb_string_t
+            _val = val
+        else
+            _val = reinterpret(duckdb_string_t, Ref(val))[]
+        end
+
+        # String Vector is a private/undocumented symbol of Base
+        v = Base.StringVector(_val.length)
+        for i in 1:(_val.length)
+            v[i] = _val.data[i]
+        end
+        return String(v)
+    else
+        # Is pointer string
+        _val = reinterpret(duckdb_string_t_ptr, val)
+        _data_ptr = convert(Ptr{UInt8}, _val.data)
+        return Base.unsafe_string(_data_ptr, _val.length)
+    end
+end
