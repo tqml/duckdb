@@ -556,7 +556,7 @@ BLOBs are composed of a byte pointer and a size. You must free blob.data
 with `duckdb_free`.
 """
 struct duckdb_blob
-    data::Ref{UInt8}
+    data::Ptr{UInt8}
     length::idx_t
 end
 
@@ -568,12 +568,33 @@ This number of bits of the second byte are set to 1, starting from the MSB.
 You must free `data` with `duckdb_free`.
 """
 struct duckdb_bit
-    data::Ref{UInt8}
+    data::Ptr{UInt8}
     size::idx_t
 end
 
 Base.convert(::Type{duckdb_blob}, val::AbstractArray{UInt8}) = duckdb_blob(val, length(val))
 Base.convert(::Type{duckdb_blob}, val::AbstractString) = duckdb_blob(codeunits(val))
+
+function convert_bit(data::duckdb_bit)
+    # Convert to UInt64 array
+    # Check the number of padding bytes
+    d, m = divrem(data.size, 8)
+    if m != 0
+        d = d + 1 # Amount of UInt64s needed
+    end
+    ceil(Int, data.size / sizeof(UInt64))
+end
+
+_copy_blob(blob::duckdb_blob) = copy(unsafe_wrap(Vector{UInt8}, blob.data, blob.length))
+
+function _create_blob(data::AbstractArray{UInt8}) 
+    # TODO memory leak?
+    size = length(data) * sizeof(UInt8)
+    ptr = duckdb_malloc(size)
+    return duckdb_blob(ptr, length(data))
+end
+
+
 # %% ----- Conversions ------------------------------
 
 # HUGEINT / INT128
@@ -647,28 +668,34 @@ Base.convert(::Type{Dates.DateTime}, val::duckdb_timestamp_ns) =
 # month, day, microsecond
 Base.convert(::Type{Dates.CompoundPeriod}, val::duckdb_interval) =
     Dates.CompoundPeriod(Dates.Month(val.months), Dates.Day(val.days), Dates.Microsecond(val.micros))
-_destruct_period_ms(val::Year) = (Dates.value(val) * 12, 0, 0)
-_destruct_period_ms(val::Month) = (Dates.value(val), 0, 0)
-_destruct_period_ms(val::Week) = (0, Dates.days(val), 0)
-_destruct_period_ms(val::Day) = (0, Dates.days(val), 0)
-_destruct_period_ms(val::Union{Hour, Minute, Second}) = (0, 0, Dates.seconds(val) * 1_000_000)
-_destruct_period_ms(val::Millisecond) = (0, 0, Dates.value(val * 1_000))
-_destruct_period_ms(val::Microsecond) = (0, 0, Dates.value(val))
+
+_destruct_period_ms(val::Year)::NTuple{3,Int} = (Dates.value(val) * 12, 0, 0)
+_destruct_period_ms(val::Month)::NTuple{3,Int} = (Dates.value(val), 0, 0)
+_destruct_period_ms(val::Week)::NTuple{3,Int} = (0, Dates.days(val), 0)
+_destruct_period_ms(val::Day)::NTuple{3,Int} = (0, Dates.days(val), 0)
+_destruct_period_ms(val::Union{Hour, Minute, Second})::NTuple{3,Int} = (0, 0, Dates.seconds(val) * 1_000_000)
+_destruct_period_ms(val::Millisecond)::NTuple{3,Int} = (0, 0, Dates.value(val * 1_000))
+_destruct_period_ms(val::Microsecond)::NTuple{3,Int} = (0, 0, Dates.value(val))
+
 Base.convert(::Type{duckdb_interval}, val::Day) = duckdb_interval(0, Dates.value(val), 0)
 Base.convert(::Type{duckdb_interval}, val::Month) = duckdb_interval(Dates.value(val), 0, 0)
 Base.convert(::Type{duckdb_interval}, val::Microsecond) = duckdb_interval(0, 0, Dates.value(val))
-function Base.convert(::Type{duckdb_interval}, val::Dates.Period)
-    m, d, us = _destruct_period_ms(val)
-    return duckdb_interval(m, d, us)
-end
+Base.convert(::Type{duckdb_interval}, val::T) where {T <: Dates.Period} = duckdb_interval(_destruct_period_ms(val)...)
+
 function Base.convert(::Type{duckdb_interval}, val::Dates.CompoundPeriod)
     m, d, us = 0, 0, 0
     for p in val.periods
-        mi, di, usi = _destruct_period_ms(p)
+        mi::Int, di::Int, usi::Int = _destruct_period_ms(p)::NTuple{3,Int}
         m += mi
         d += di
         us += usi
     end
+    # intervals::Vector{duckdb_interval} = [convert(duckdb_interval, p)::duckdb_interval for p in val.periods]
+    # for i in intervals
+    #     m += i.months
+    #     d += i.days
+    #     us += i.micros
+    # end
 
     # Check for overflows
     US_PER_DAY = 24 * 3600 * 1_000_000

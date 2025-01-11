@@ -81,13 +81,13 @@ end
 #        Reader Interface
 #------------------------------------------------------------
 
-mutable struct VecReader{T, D}
+mutable struct VecReader{T, D, F <: Function, Fc <: Function}
     vec::Vec
     N::Int
     logical_type::LogicalType
-    julia_type::T
-    conversion_func::Function
-    getindex_func::Function
+    julia_type::Type{T}
+    conversion_func::Fc
+    getindex_func::F
     validity_mask::ValidityMask
     data::D
 end
@@ -98,46 +98,90 @@ Base.eltype(reader::VecReader) = reader.julia_type
 Base.HasEltype(::Type{VecReader}) = true
 Base.HasLength(::Type{VecReader}) = true
 
-function VecReader(vec::Vec, logical_type::LogicalType, ::Type{T}, N = VECTOR_SIZE) where {T}
-    type_id = get_type_id(logical_type)
-    if type_id == DUCKDB_TYPE_LIST
-        return _create_vecreader_list(vec, logical_type, T, N)
-    elseif type_id == DUCKDB_TYPE_ARRAY
-        return _create_vecreader_array(vec, logical_type, T, N)
-    elseif type_id == DUCKDB_TYPE_MAP
-        return _create_vecreader_dict(vec, logical_type, T, N)
-    elseif type_id == DUCKDB_TYPE_STRUCT
-        return _create_vecreader_struct(vec, logical_type, T, N)
-    elseif type_id == DUCKDB_TYPE_MAP
-        return _create_vecreader_dict(vec, logical_type, T, N)
-    elseif type_id == DUCKDB_TYPE_BLOB || type_id == DUCKDB_TYPE_BIT
-        reader = _create_vecreader_simple(vec, logical_type, T, N)
-        reader.conversion_func = x -> Base.codeunits(convert(T, x))
-        return reader
-    elseif is_complex_type(logical_type)
-        throw(NotImplementedException("Complex types are not supported"))
-    else
-        return _create_vecreader_simple(vec, logical_type, T, N)
+
+function Base.getindex(reader::VecReader{T}, index::Integer) where {T}
+    if index < 1 || index > reader.N
+        throw(BoundsError(reader, index))
     end
-end
-
-function Base.getindex(reader::VecReader, index)
-    # if index < 1 || index > reader.N
-    #     throw(BoundsError(reader, index))
-    # end
-
     if all_valid(reader.validity_mask)
-        x = reader.getindex_func(reader.data, index)
-        return reader.conversion_func(x)
+        #return reader.conversion_func(reader.getindex_func(reader.data, index))
+        return reader.getindex_func(reader.data, index)
     else
         if isvalid(reader.validity_mask, index)
-            x = reader.getindex_func(reader.data, index)
-            return reader.conversion_func(x)
+            #return reader.conversion_func(reader.getindex_func(reader.data, index))
+            return reader.getindex_func(reader.data, index)
         else
             return missing
         end
     end
 end
+
+function _fill!(buf::BUF, reader::VecReader{T}) where {T, BUF <: AbstractArray{<:T}}
+    i = 1
+    for ix in eachindex(buf)
+        buf[ix] = reader.getindex_func(reader.data, i)
+        i += 1
+    end
+    return buf
+end
+
+# function VecReader(vec::Vec, logical_type::LogicalType, ::Type{T}, N = VECTOR_SIZE) where {T}
+#     type_id = get_type_id(logical_type)
+#     if type_id == DUCKDB_TYPE_LIST
+#         return _create_vecreader_list(vec, logical_type, T, N)
+#     elseif type_id == DUCKDB_TYPE_ARRAY
+#         return _create_vecreader_array(vec, logical_type, T, N)
+#     elseif type_id == DUCKDB_TYPE_MAP
+#         return _create_vecreader_dict(vec, logical_type, T, N)
+#     elseif type_id == DUCKDB_TYPE_STRUCT
+#         return _create_vecreader_struct(vec, logical_type, T, N)
+#     elseif type_id == DUCKDB_TYPE_MAP
+#         return _create_vecreader_dict(vec, logical_type, T, N)
+#     elseif type_id == DUCKDB_TYPE_BLOB || type_id == DUCKDB_TYPE_BIT
+#         reader = _create_vecreader_simple(vec, logical_type, T, N)
+#         reader.conversion_func = x -> Base.codeunits(convert(T, x))
+#         return reader
+#     elseif is_complex_type(logical_type)
+#         throw(NotImplementedException("Complex types are not supported"))
+#     else
+#         return _create_vecreader_simple(vec, logical_type, T, N)
+#     end
+# end
+
+VecReader(vec::Vec, logical_type::LogicalType, ::Type{T}, N) where {T<:Integer} = _create_vecreader_simple(vec, logical_type, T, N)
+VecReader(vec::Vec, logical_type::LogicalType, ::Type{T}, N) where {T<:AbstractFloat} = _create_vecreader_simple(vec, logical_type, T, N)
+VecReader(vec::Vec, logical_type::LogicalType, ::Type{T}, N) where {T<:String} = _create_vecreader_simple(vec, logical_type, T, N)
+VecReader(vec::Vec, logical_type::LogicalType, ::Type{T}, N) where {T <: Date}  = _create_vecreader_simple(vec, logical_type, T, N)
+VecReader(vec::Vec, logical_type::LogicalType, ::Type{T}, N) where {T <: Time}   = _create_vecreader_simple(vec, logical_type, T, N)
+VecReader(vec::Vec, logical_type::LogicalType, ::Type{T}, N) where {T <: DateTime}   = _create_vecreader_simple(vec, logical_type, T, N)
+VecReader(vec::Vec, logical_type::LogicalType, ::Type{T}, N) where {T <: Union{Period, Dates.CompoundPeriod}}   = _create_vecreader_simple(vec, logical_type, T, N)
+
+function VecReader(vec::Vec, logical_type::LogicalType, ::Type{T}, N = VECTOR_SIZE) where {T}
+    if isstructtype(T)
+        return _create_vecreader_struct(vec, logical_type, T, N)
+    else
+        return _create_vecreader_simple(vec, logical_type, T, N)
+    end
+end
+
+
+
+function VecReader(vec::Vec, logical_type::LogicalType, ::Type{T}, N = VECTOR_SIZE) where {T<:AbstractArray}
+    return _create_vecreader_list(vec, logical_type, T, N)
+end
+
+function VecReader(vec::Vec, logical_type::LogicalType, ::Type{T}, N = VECTOR_SIZE) where {T<:NamedTuple}
+    return _create_vecreader_struct(vec, logical_type, T, N)
+end
+
+function VecReader(vec::Vec, logical_type::LogicalType, ::Type{T}, N = VECTOR_SIZE) where {T<:AbstractDict}
+    return _create_vecreader_dict(vec, logical_type, T, N)
+end
+
+function VecReader(vec::Vec, logical_type::LogicalType, ::Type{T}, N = VECTOR_SIZE) where {T<:Tuple}
+    return _create_vecreader_array(vec, logical_type, T, N)
+end
+
 
 function julia_eltype(r::VecReader)
     return duckdb_type_to_julia_type(r.logical_type, all_valid(r.validity_mask))
@@ -146,24 +190,26 @@ end
 
 function _create_vecreader_simple(vec::Vec, logical_type::LogicalType, ::Type{T}, N) where {T}
     type_id = get_type_id(logical_type)
-    internal_type = duckdb_type_to_internal_type(type_id)
-    data = get_array(vec, internal_type, N)
+    #internal_type = duckdb_type_to_internal_type(type_id)
+    internal_type_static = julia_to_duck_type(T)
+    data = get_array(vec, internal_type_static, N)
     #conversion_func = x -> convert(T, x)
     conversion_func = identity
     getindex_func = getindex
-    validity_mask = get_validity(vec, N)
+    validity_mask = get_readonly_validity(vec, N)
     return VecReader(vec, Int(N), logical_type, T, conversion_func, getindex_func, validity_mask, data)
 end
 
 function _create_vecreader_list(vec::Vec, logical_type::LogicalType, ::Type{T}, N) where {T}
     child_vec = list_child(vec)
     child_type = get_list_child_type(logical_type)
-    julia_type = duckdb_type_to_julia_type(child_type)
+    #julia_type = duckdb_type_to_julia_type(child_type)
+    julia_type_static = eltype(T)
     list_vec = get_array(vec, duckdb_list_entry_t, N)
     N_total = Int(list_size(vec))
-    child_reader = VecReader(child_vec, child_type, julia_type, N_total)
+    child_reader = VecReader(child_vec, child_type, julia_type_static, N_total)
     data = (list_vec, child_reader) # TODO make struct
-    validity_mask = get_validity(vec, N)
+    validity_mask = get_readonly_validity(vec, N)
     return VecReader(vec, Int(N), logical_type, T, identity, _getindex_list, validity_mask, data)
 end
 
@@ -181,9 +227,10 @@ function _create_vecreader_array(vec::Vec, logical_type::LogicalType, ::Type{T},
     child_vec = array_child(vec)
     child_type = get_array_child_type(logical_type)
     child_julia_type = duckdb_type_to_julia_type(child_type)
+    child_julia_type_static = eltype(T)
     N_array = get_array_child_size(logical_type)
     N_child = N * N_array
-    child_reader = VecReader(child_vec, child_type, child_julia_type, N_child)
+    child_reader = VecReader(child_vec, child_type, child_julia_type_static, N_child)
     data = (N, N_array, N_child, child_reader) # TODO make struct
     validity_mask = get_readonly_validity(vec, N)
     return VecReader(vec, Int(N), logical_type, T, identity, _getindex_array, validity_mask, data)
@@ -198,19 +245,42 @@ end
 function _create_vecreader_struct(vec::Vec, logical_type::LogicalType, ::Type{T}, N) where {T}
     julia_type = duckdb_type_to_julia_type(logical_type)
     K = get_struct_child_count(logical_type)
-    names = Vector{Symbol}()
-    readers = Vector{VecReader}()
-    for k in 1:K
-        child_type = get_struct_child_type(logical_type, k)
-        child_vec = struct_child(vec, k)
-        child_type_julia = duckdb_type_to_julia_type(child_type)
-        child_reader = VecReader(child_vec, child_type, child_type_julia, N)
-        push!(readers, child_reader)
-        child_name = Symbol(get_struct_child_name(logical_type, k))
-        push!(names, child_name)
+    
+    # TODO use propertynames?
+    names = fieldnames(T)
+    types_tuple = fieldtypes(T)
+    Nf = length(names)
+
+    if K != Nf
+        throw(ArgumentError(string("Internal Conversion Error: Struct field count mismatch: ", K, " != ", Nf)))
     end
-    names_tuple = Tuple(name for name in names)
-    data = NamedTuple{names_tuple}(readers)
+    
+    for i in 1:K
+        s_name = get_struct_child_name(logical_type, i)
+        if string(names[i]) != s_name 
+            throw(ArgumentError(string("Internal Conversion Error: Struct field name mismatch: ", names[i], " != ", s_name)))
+        end
+    end
+
+    for i in 1:K
+        s_type = get_struct_child_type(logical_type, i)
+        s_type_id = get_type_id(s_type)
+        lt::LogicalType = create_logical_type(types_tuple[i])
+        lt_id = get_type_id(lt)
+        if lt_id != s_type_id
+            throw(ArgumentError(string("Internal Conversion Error: Struct field type mismatch: ", lt_id, " != ", s_type_id)))
+        end
+    end
+
+    readers = Tuple(VecReader(
+            struct_child(vec, k), 
+            get_struct_child_type(logical_type, k), 
+            fieldtype(T, name), 
+            N) 
+        for (k,name) in enumerate(names)
+    )
+
+    data = NamedTuple{names}(readers)
     validity_mask = get_readonly_validity(vec, N)
     return VecReader(vec, Int(N), logical_type, T, identity, _get_index_struct, validity_mask, data)
 end
@@ -302,7 +372,7 @@ function VecWriter(vec::Vec, logical_type::LogicalType, ::Type{T}, N = VECTOR_SI
 end
 
 function VecWriter(vec::Vec, logical_type::LogicalType, ::Type{T}, N = VECTOR_SIZE) where {T<:AbstractDict}
-    return _create_vecwriter_dict(vec, logical_type, T, N)
+    return _create_vecwriter_map(vec, logical_type, T, N)
 end
 
 function VecWriter(vec::Vec, logical_type::LogicalType, ::Type{T}, N = VECTOR_SIZE) where {T<:Tuple}
@@ -349,9 +419,10 @@ function _create_vecwriter_array(vec::Vec, logical_type::LogicalType, ::Type{T},
     child_vec = array_child(vec)
     child_type = get_array_child_type(logical_type)
     child_julia_type = duckdb_type_to_julia_type(child_type)
+    child_julia_type_static = eltype(T)
     N_array = get_array_child_size(logical_type)
     N_child = N * N_array
-    child_writer = VecWriter(child_vec, child_type, child_julia_type, N_child)
+    child_writer = VecWriter(child_vec, child_type, child_julia_type_static, N_child)
     data = (N, N_array, N_child, child_writer) # TODO make struct
     validity_mask = get_validity(vec, N)
     return VecWriter(vec, N, logical_type, T, _setindex_array, validity_mask, data)
@@ -440,11 +511,12 @@ function _create_vecwriter_list(vec::Vec, logical_type::LogicalType, ::Type{T}, 
     duckdb_list_vector_reserve(vec.handle, N)
     child_vec = list_child(vec)
     child_logical_type = LogicalType(DuckDB.duckdb_vector_get_column_type(child_vec.handle))
+    child_logical_type_static = eltype(T)
     child_julia_type = duckdb_type_to_julia_type(child_logical_type)
     validity_mask = get_validity(vec, N)
     #data = (vec, N, child_logical_type, child_julia_type)
     #entries = get_array(vec, duckdb_list_entry_t, N)
-    data = (vec, nothing, N, child_julia_type)
+    data = (vec, nothing, N, child_logical_type_static)
     return VecWriter(vec, Int(N), logical_type, T, _setindex_list, validity_mask, data)
 end
 
@@ -476,6 +548,45 @@ function _setindex_list(data, value, index)
         j = offset + i
         child_writer[j] = value[i]
     end
+end
+
+# %% ----- Dict ------------------------------
+
+function _create_vecwriter_map(vec::Vec, logical_type::LogicalType, ::Type{T}, N) where {K,V, T<:AbstractDict{K,V}}
+    # Internally map vectors are stored as a LIST[STRUCT(key KEY_TYPE, value VALUE_TYPE)].
+    child_vec = list_child(vec)
+    child_logical_type = LogicalType(DuckDB.duckdb_vector_get_column_type(child_vec.handle))
+
+    N_child = list_size(vec)
+    key_type = get_map_key_type(logical_type)
+    value_type = get_map_value_type(logical_type)
+    
+    lt_key = create_logical_type(K)
+    lt_value = create_logical_type(V)
+    @assert get_type_id(lt_key) == get_type_id(key_type)
+    @assert get_type_id(lt_value) == get_type_id(value_type)
+
+    julia_type_inner = Vector{NamedTuple{(:key, :value), Tuple{K,V}}}
+    child_writer = VecWriter(child_vec, child_logical_type, julia_type_inner, N_child)
+    validity_mask = get_validity(vec, N)
+    
+    data = (N, N_child, key_type, value_type, child_writer)
+    return VecWriter(vec, Int(N), logical_type, T, _setindex_dict, validity_mask, data)
+end
+
+
+function _setindex_dict(data, value, index)
+    (N, N_child, key_type, value_type, child_writer) = data
+    sizehint!(child_writer, length(value))
+    
+    N_new = length(value)
+    state = duckdb_list_vector_set_size(child_writer.vec.handle, N_new)
+    if state != DuckDBSuccess
+        throw(QueryException("Failed to set list size"))
+    end
+    child_writer.N = N_new
+    
+    child_writer[index] = [(key=k, value=v) for (k,v) in pairs(value)]
 end
 
 

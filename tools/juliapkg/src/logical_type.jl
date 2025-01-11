@@ -178,7 +178,7 @@ function create_logical_type(::Type{T}) where {T}
         struct_handle = duckdb_create_struct_type(member_type_ptrs, member_names, N)
         struct_type_name = "JL" * string(nameof(T))
         duckdb_logical_type_set_alias(struct_handle, struct_type_name)
-        return DuckDB.LogicalType(struct_handle, member_types)
+        return DuckDB.LogicalType(struct_handle)
     end
 end
 
@@ -188,7 +188,7 @@ function create_logical_type(::Type{NamedTuple{names, T}}) where {names, T <: Tu
     member_types = [create_logical_type(type) for type in T.types]
     Base.GC.@preserve member_types begin
         member_type_ptrs = [member.handle for member in member_types]
-        return DuckDB.LogicalType(duckdb_create_struct_type(member_type_ptrs, member_names, n), member_types)
+        return DuckDB.LogicalType(duckdb_create_struct_type(member_type_ptrs, member_names, n))
     end
 end
 
@@ -219,7 +219,7 @@ function create_logical_type(::Type{T}) where {T <: AbstractArray}
     X = eltype(T)
     child_type = create_logical_type(X)
     list_type = duckdb_create_list_type(child_type.handle)
-    return DuckDB.LogicalType(list_type, [child_type])
+    return DuckDB.LogicalType(list_type)
 end
 
 function create_logical_type(::Type{NTuple{N, U}}) where {N, U}
@@ -228,14 +228,16 @@ function create_logical_type(::Type{NTuple{N, U}}) where {N, U}
     end
     child_type = create_logical_type(U)
     array_type_handle = duckdb_create_array_type(child_type.handle, N)
-    return DuckDB.LogicalType(array_type_handle, [child_type])
+    return DuckDB.LogicalType(array_type_handle)
 end
 
 function create_logical_type(::Type{T}) where {K, V, T <: Dict{K, V}}
     key_type = create_logical_type(K)
     value_type = create_logical_type(V)
-    map_type = duckdb_create_map_type(key_type.handle, value_type.handle)
-    return LogicalType(map_type, [key_type, value_type])
+    GC.@preserve key_type value_type begin
+        map_type = duckdb_create_map_type(key_type.handle, value_type.handle)
+        return LogicalType(map_type)
+    end
 end
 
 function get_array_child_type(type::LogicalType)

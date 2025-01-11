@@ -5,6 +5,11 @@ mutable struct MyStruct
     c::NTuple{3, Int}
 end
 
+# Define Equality with NamedTuple -> DuckDB cannot recover the struct type from the NamedTuple
+Base.:(==)(m::MyStruct, n::MyStruct) = m.a == n.a && m.b == n.b && m.c == n.c
+Base.:(==)(m::MyStruct, n::NamedTuple{(:a,:b,:c), Tuple{Int, Float64, NTuple{3, Int}}}) = m.a == n.a && m.b == n.b && m.c == n.c
+Base.:(==)(m::NamedTuple, n::MyStruct) = n == m
+
 function random_string(len)
     alphabet = "abcdefghijklmnopqrstuvwxyz"
     unicode_alphabet = ["🦆", "α", "ξ"]
@@ -29,6 +34,10 @@ _random_element(::Type{Dates.CompoundPeriod}, size) = random_compound_period()
 _random_element(::Type{NTuple{N, T}}, size) where {N, T} = Tuple(_random_element(T, size) for _ in 1:N)
 _random_element(::Type{Vector{T}}, size) where {T} = [_random_element(T, size) for _ in 1:size]
 _random_element(::Type{MyStruct}, size) = MyStruct(rand(Int), rand(), _random_element(NTuple{3, Int}, size))
+_random_element(::Type{Dict{K, V}}, size) where {K,V} = Dict(s => _random_element(V, size) for s in unique([_random_element(K, size) for j in 1:size]))
+
+
+
 
 # @testset "Logical Types" begin
 
@@ -587,7 +596,8 @@ _random_element(::Type{MyStruct}, size) = MyStruct(rand(Int), rand(), _random_el
         Dates.CompoundPeriod,
         NTuple{10, Int},
         Vector{Int},
-        MyStruct
+        MyStruct,
+        Dict{String, Int},
     ]
     t_reads = Float64[]
     t_writes = Float64[]
@@ -626,7 +636,7 @@ _random_element(::Type{MyStruct}, size) = MyStruct(rand(Int), rand(), _random_el
                 out = [Dates.canonicalize(x) for x in out]
             end
 
-            @test isequal(out, X)
+            @test isequal(X,out)
             t_baseline = 0.0
             if !(T <: Tuple) && !(T <: MyStruct)
                 # Tuple not supported
