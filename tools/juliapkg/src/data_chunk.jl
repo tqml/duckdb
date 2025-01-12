@@ -13,6 +13,12 @@ mutable struct DataChunk
     end
 end
 
+function DataChunk(types::AbstractVector{<:LogicalType})
+    type_handles = [t.handle for t in types]
+    handle = duckdb_create_data_chunk(type_handles, length(type_handles))
+    return DataChunk(handle, true)
+end
+
 function get_column_count(chunk::DataChunk)
     return duckdb_data_chunk_get_column_count(chunk.handle)
 end
@@ -22,6 +28,9 @@ function get_size(chunk::DataChunk)
 end
 
 function set_size(chunk::DataChunk, size::Int64)
+    if size < 0 || size > VECTOR_SIZE
+        throw(ArgumentError(string("Failed to set size to ", size, ", expected value between 0 and ", VECTOR_SIZE)))
+    end
     return duckdb_data_chunk_set_size(chunk.handle, size)
 end
 

@@ -449,6 +449,14 @@ end
 
 _wrap_missing(x, yes) = ifelse(yes, Union{Missing, x}, x)
 
+function duckdb_type_to_julia_type_missing(x, no_missing=false)
+    x = duckdb_type_to_julia_type(x)
+    if no_missing
+        return x
+    end
+    return Union{Missing, x}
+end
+
 function duckdb_type_to_julia_type(x, wrap_missing = true)
     type_id = get_type_id(x)
     if type_id == DUCKDB_TYPE_DECIMAL
@@ -530,6 +538,7 @@ julia_to_duck_type(::Type{Int128}) = duckdb_hugeint
 julia_to_duck_type(::Type{UInt128}) = duckdb_uhugeint
 julia_to_duck_type(::Type{String}) = duckdb_string_t
 julia_to_duck_type(::Type{T}) where {T} = T
+julia_to_duck_type(::Type{Union{Missing,T}}) where {T} = T
 
 
 
@@ -755,5 +764,15 @@ function Base.convert(::Type{String}, val::Union{duckdb_string_t, duckdb_string_
         _val = reinterpret(duckdb_string_t_ptr, val)
         _data_ptr = convert(Ptr{UInt8}, _val.data)
         return Base.unsafe_string(_data_ptr, _val.length)
+    end
+end
+
+
+
+function Base.show(io::IO, val::duckdb_string_t)
+    if val.length <= STRING_INLINE_LENGTH
+        print(io, "duckdb_string_t( INLINE, length=", val.length, ", data=", val.data, ")")
+    else
+        print(io, "duckdb_string_t( POINTER, length=", val.length, ", data=", val.data, ")")
     end
 end

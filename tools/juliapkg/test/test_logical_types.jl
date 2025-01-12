@@ -1,143 +1,135 @@
 
-mutable struct MyStruct
-    a::Int
-    b::Float64
-    c::NTuple{3, Int}
+include("test_logical_types_helper.jl")
+
+@testsnippet LogicalTypeSetup begin
+    include("test_logical_types_helper.jl")
 end
 
-# Define Equality with NamedTuple -> DuckDB cannot recover the struct type from the NamedTuple
-Base.:(==)(m::MyStruct, n::MyStruct) = m.a == n.a && m.b == n.b && m.c == n.c
-Base.:(==)(m::MyStruct, n::NamedTuple{(:a,:b,:c), Tuple{Int, Float64, NTuple{3, Int}}}) = m.a == n.a && m.b == n.b && m.c == n.c
-Base.:(==)(m::NamedTuple, n::MyStruct) = n == m
 
-function random_string(len)
-    alphabet = "abcdefghijklmnopqrstuvwxyz"
-    unicode_alphabet = ["🦆", "α", "ξ"]
-    return join(vcat(rand(alphabet, len), rand(unicode_alphabet, len)))
+@testitem "Logical Types" setup=[LogicalTypeSetup] begin
+
+    int_duck_types = (
+        DuckDB.DUCKDB_TYPE_BOOLEAN,
+        DuckDB.DUCKDB_TYPE_TINYINT,
+        DuckDB.DUCKDB_TYPE_SMALLINT,
+        DuckDB.DUCKDB_TYPE_INTEGER,
+        DuckDB.DUCKDB_TYPE_BIGINT,
+        DuckDB.DUCKDB_TYPE_HUGEINT,
+        DuckDB.DUCKDB_TYPE_UTINYINT,
+        DuckDB.DUCKDB_TYPE_USMALLINT,
+        DuckDB.DUCKDB_TYPE_UINTEGER,
+        DuckDB.DUCKDB_TYPE_UBIGINT,
+        DuckDB.DUCKDB_TYPE_UHUGEINT
+    )
+    int_types = (Bool, Int8, Int16, Int32, Int64, Int128, UInt8, UInt16, UInt32, UInt64, UInt128)
+    for (t, t_id) in zip(int_types, int_duck_types)
+        lt = DuckDB.create_logical_type(t)
+        @test lt.handle != C_NULL
+        @test DuckDB.get_type_id(lt) == t_id
+    end
+
+    datetime_duck_types = (
+        DuckDB.DUCKDB_TYPE_DATE,
+        DuckDB.DUCKDB_TYPE_TIME,
+        DuckDB.DUCKDB_TYPE_TIMESTAMP,
+        DuckDB.DUCKDB_TYPE_INTERVAL,
+        DuckDB.DUCKDB_TYPE_INTERVAL
+    )
+    datetime_types = (Date, Time, DateTime, Period, Dates.CompoundPeriod)
+    for (t, type_id) in zip(datetime_types, datetime_duck_types)
+        lt = DuckDB.create_logical_type(t)
+        @test lt.handle != C_NULL
+        @test DuckDB.get_type_id(lt) == type_id
+    end
+
+
+    v = [1, 2, 3]
+    lt = DuckDB.create_logical_type(typeof(v))
+    @test lt.handle != C_NULL
+    @test DuckDB.get_type_id(lt) == DuckDB.DUCKDB_TYPE_LIST
+
+    t = (1, 2, 3)
+    lt = DuckDB.create_logical_type(typeof(t))
+    @test lt.handle != C_NULL
+    @test DuckDB.get_type_id(lt) == DuckDB.DUCKDB_TYPE_ARRAY
+
+    d = Dict(["a" => 1, "b" => 2, "c" => 3])
+    lt = DuckDB.create_logical_type(typeof(d))
+    @test lt.handle != C_NULL
+    @test DuckDB.get_type_id(lt) == DuckDB.DUCKDB_TYPE_MAP
+
+    nt = (a = 1, b = 3.0, c = "hello", d = (1, 2, 3), e = [3.0, 4.0, 5.0])
+    lt = DuckDB.create_logical_type(typeof(nt))
+    @test lt.handle != C_NULL
+    Base.GC.gc()
+    @test DuckDB.get_type_id(lt) == DuckDB.DUCKDB_TYPE_STRUCT
+    @test DuckDB.is_complex_type(lt) == true
+    @test DuckDB.get_struct_child_count(lt) == 5
+    @test DuckDB.get_struct_child_name(lt, 1) == "a"
+    @test DuckDB.get_struct_child_name(lt, 2) == "b"
+    @test DuckDB.get_struct_child_name(lt, 3) == "c"
+    @test DuckDB.get_struct_child_name(lt, 4) == "d"
+    @test DuckDB.get_struct_child_name(lt, 5) == "e"
+    
+    @test DuckDB.alias(lt) == ""
+    DuckDB.set_alias!(lt, "ComplexStruct")
+    @test DuckDB.alias(lt) == "ComplexStruct"
+    Base.GC.gc()
+
+
+
+    ct = MyStruct(1, 2.0, (1, 2, 3))
+    lt = DuckDB.create_logical_type(typeof(ct))
+    @test lt.handle != C_NULL
+    Base.GC.gc()
+    @test DuckDB.get_type_id(lt) == DuckDB.DUCKDB_TYPE_STRUCT
+    @test DuckDB.is_complex_type(lt) == true
+    @test DuckDB.get_struct_child_count(lt) == 3
+    @test DuckDB.get_struct_child_name(lt, 1) == "a"
+    @test DuckDB.get_struct_child_name(lt, 2) == "b"
+    @test DuckDB.get_struct_child_name(lt, 3) == "c"
+    @test DuckDB.alias(lt) == "JLMyStruct"
+
+
+    # Test StaticArrays Extension
+    S1 = StaticArrays.SVector{10, Int}
+    S2 = StaticArrays.SMatrix{2,2, Int}
+    S3 = StaticArrays.SArray{Tuple{2,2,2}, Int, 3}
+    lt1 = DuckDB.create_logical_type(S1)
+    lt2 = DuckDB.create_logical_type(S2)
+    lt3 = DuckDB.create_logical_type(S3)
+    @test DuckDB.get_type_id(lt1) == DuckDB.DUCKDB_TYPE_ARRAY
+    @test DuckDB.get_type_id(lt2) == DuckDB.DUCKDB_TYPE_ARRAY
+    @test DuckDB.get_type_id(lt3) == DuckDB.DUCKDB_TYPE_ARRAY
+    @test DuckDB.get_array_child_size(lt1) == 10
+    @test DuckDB.get_array_child_size(lt2) == 4
+    @test DuckDB.get_array_child_size(lt3) == 8
+    @test DuckDB.get_type_id(DuckDB.get_array_child_type(lt1)) == DuckDB.DUCKDB_TYPE_BIGINT
+    @test DuckDB.get_type_id(DuckDB.get_array_child_type(lt2)) == DuckDB.DUCKDB_TYPE_BIGINT
+    @test DuckDB.get_type_id(DuckDB.get_array_child_type(lt3)) == DuckDB.DUCKDB_TYPE_BIGINT
 end
 
-random_blob(len) = rand(UInt8, len)
-random_time() = Dates.Time(rand(0:23), rand(0:59), rand(0:59))
-random_date() = Dates.Date(rand(1971:2030), rand(1:12), rand(1:28))
-random_datetime() = Dates.DateTime(random_date(), random_time())
-random_period() = Dates.Period(rand((Day, Hour, Minute, Second, Millisecond, Microsecond, Week, Month, Year))(1))
-random_compound_period() = Dates.CompoundPeriod([random_period() for _ in 1:rand(2:5)])
 
-_random_element(::Type{T}, size) where {T} = rand(T)
-_random_element(::Type{String}, size) = random_string(size)
-_random_element(::Type{Vector{UInt8}}, size) = random_blob(size)
-_random_element(::Type{Dates.Time}, size) = random_time()
-_random_element(::Type{Dates.Date}, size) = random_date()
-_random_element(::Type{Dates.DateTime}, size) = random_datetime()
-_random_element(::Type{Dates.Period}, size) = random_period()
-_random_element(::Type{Dates.CompoundPeriod}, size) = random_compound_period()
-_random_element(::Type{NTuple{N, T}}, size) where {N, T} = Tuple(_random_element(T, size) for _ in 1:N)
-_random_element(::Type{Vector{T}}, size) where {T} = [_random_element(T, size) for _ in 1:size]
-_random_element(::Type{MyStruct}, size) = MyStruct(rand(Int), rand(), _random_element(NTuple{3, Int}, size))
-_random_element(::Type{Dict{K, V}}, size) where {K,V} = Dict(s => _random_element(V, size) for s in unique([_random_element(K, size) for j in 1:size]))
+@testitem "Static Arrays" begin
+    using StaticArrays
+    T = StaticArrays.SArray{Tuple{2,2,2}, Int, 3}
 
+    N = prod(StaticArrays.Size(T))
+    @show T
 
+    #@info "is tuple" T <: Tuple
 
+    #x = (1.0,2.0,3.0,4.0)
+    #y = convert(T, x)
+    #@show isbits(T)
+    #y = reinterpret(T, x)
+    #@time convert(T, x)
 
-# @testset "Logical Types" begin
+    @time y = Tuple(i for i in 1:N)
+    @time x = T(i for i in 1:N)
 
-#     int_duck_types = (
-#         DuckDB.DUCKDB_TYPE_BOOLEAN,
-#         DuckDB.DUCKDB_TYPE_TINYINT,
-#         DuckDB.DUCKDB_TYPE_SMALLINT,
-#         DuckDB.DUCKDB_TYPE_INTEGER,
-#         DuckDB.DUCKDB_TYPE_BIGINT,
-#         DuckDB.DUCKDB_TYPE_HUGEINT,
-#         DuckDB.DUCKDB_TYPE_UTINYINT,
-#         DuckDB.DUCKDB_TYPE_USMALLINT,
-#         DuckDB.DUCKDB_TYPE_UINTEGER,
-#         DuckDB.DUCKDB_TYPE_UBIGINT,
-#         DuckDB.DUCKDB_TYPE_UHUGEINT
-#     )
-#     int_types = (Bool, Int8, Int16, Int32, Int64, Int128, UInt8, UInt16, UInt32, UInt64, UInt128)
-#     for (t, t_id) in zip(int_types, int_duck_types)
-#         lt = DuckDB.create_logical_type(t)
-#         @test lt.handle != C_NULL
-#         @test DuckDB.get_type_id(lt) == t_id
-#     end
-
-#     datetime_duck_types = (
-#         DuckDB.DUCKDB_TYPE_DATE,
-#         DuckDB.DUCKDB_TYPE_TIME,
-#         DuckDB.DUCKDB_TYPE_TIMESTAMP,
-#         DuckDB.DUCKDB_TYPE_INTERVAL,
-#         DuckDB.DUCKDB_TYPE_INTERVAL
-#     )
-#     datetime_types = (Date, Time, DateTime, Period, Dates.CompoundPeriod)
-#     for (t, type_id) in zip(datetime_types, datetime_duck_types)
-#         lt = DuckDB.create_logical_type(t)
-#         @test lt.handle != C_NULL
-#         @test DuckDB.get_type_id(lt) == type_id
-#     end
-
-
-#     v = [1, 2, 3]
-#     lt = DuckDB.create_logical_type(typeof(v))
-#     @test lt.handle != C_NULL
-#     @test DuckDB.get_type_id(lt) == DuckDB.DUCKDB_TYPE_LIST
-
-#     t = (1, 2, 3)
-#     lt = DuckDB.create_logical_type(typeof(t))
-#     @test lt.handle != C_NULL
-#     @test DuckDB.get_type_id(lt) == DuckDB.DUCKDB_TYPE_ARRAY
-
-#     d = Dict(["a" => 1, "b" => 2, "c" => 3])
-#     lt = DuckDB.create_logical_type(typeof(d))
-#     @test lt.handle != C_NULL
-#     @test DuckDB.get_type_id(lt) == DuckDB.DUCKDB_TYPE_MAP
-
-#     nt = (a = 1, b = 3.0, c = "hello", d = (1, 2, 3), e = [3.0, 4.0, 5.0])
-#     lt = DuckDB.create_logical_type(typeof(nt))
-#     @test lt.handle != C_NULL
-#     Base.GC.gc()
-#     @test DuckDB.get_type_id(lt) == DuckDB.DUCKDB_TYPE_STRUCT
-#     @test DuckDB.is_complex_type(lt) == true
-#     @test DuckDB.get_struct_child_count(lt) == 5
-#     @test DuckDB.get_struct_child_name(lt, 1) == "a"
-#     @test DuckDB.get_struct_child_name(lt, 2) == "b"
-#     @test DuckDB.get_struct_child_name(lt, 3) == "c"
-#     @test DuckDB.get_struct_child_name(lt, 4) == "d"
-#     @test DuckDB.get_struct_child_name(lt, 5) == "e"
-#     @test length(lt.inner_types) == length(keys(nt))
-#     @test DuckDB.get_type_id(lt.inner_types[1]) == DuckDB.DuckDB.DUCKDB_TYPE_BIGINT
-#     @test DuckDB.get_type_id(lt.inner_types[2]) == DuckDB.DUCKDB_TYPE_DOUBLE
-#     @test DuckDB.get_type_id(lt.inner_types[3]) == DuckDB.DUCKDB_TYPE_VARCHAR
-#     @test DuckDB.get_type_id(lt.inner_types[4]) == DuckDB.DUCKDB_TYPE_ARRAY
-#     @test DuckDB.get_type_id(lt.inner_types[5]) == DuckDB.DUCKDB_TYPE_LIST
-
-#     @test DuckDB.alias(lt) == ""
-#     DuckDB.set_alias!(lt, "ComplexStruct")
-#     @test DuckDB.alias(lt) == "ComplexStruct"
-#     Base.GC.gc()
-
-
-
-#     ct = MyStruct(1, 2.0, (1, 2, 3))
-#     lt = DuckDB.create_logical_type(typeof(ct))
-#     @test lt.handle != C_NULL
-#     Base.GC.gc()
-#     @test DuckDB.get_type_id(lt) == DuckDB.DUCKDB_TYPE_STRUCT
-#     @test DuckDB.is_complex_type(lt) == true
-#     @test DuckDB.get_struct_child_count(lt) == 3
-#     @test DuckDB.get_struct_child_name(lt, 1) == "a"
-#     @test DuckDB.get_struct_child_name(lt, 2) == "b"
-#     @test DuckDB.get_struct_child_name(lt, 3) == "c"
-
-#     @test length(lt.inner_types) == 3
-#     @test DuckDB.get_type_id(lt.inner_types[1]) == DuckDB.DUCKDB_TYPE_BIGINT
-#     @test DuckDB.get_type_id(lt.inner_types[2]) == DuckDB.DUCKDB_TYPE_DOUBLE
-#     @test DuckDB.get_type_id(lt.inner_types[3]) == DuckDB.DUCKDB_TYPE_ARRAY
-
-#     @test DuckDB.alias(lt) == "JLMyStruct"
-# end
-
-
-
+    @show x
+end
 
 
 # @testset failfast = true "Conversions Julia to Internal to Julia: Numerical" begin
@@ -572,61 +564,84 @@ _random_element(::Type{Dict{K, V}}, size) where {K,V} = Dict(s => _random_elemen
 # end
 
 
-@testset "Conversions Julia to Internal to Julia: Combined Multi Chunk" begin
+@testitem "Conversions Julia to Internal to Julia: Combined Multi Chunk" begin
+    using DuckDB
+    include("test_logical_types_helper.jl")
     N = 2048
 
     types = [
-        Bool,
-        Int8,
-        Int16,
-        Int32,
-        Int64,
-        Int128,
-        UInt8,
-        UInt16,
-        UInt32,
-        UInt64,
-        UInt128,
-        Float32,
-        Float64,
-        String,
-        Date,
-        Time,
-        DateTime,
-        Dates.CompoundPeriod,
+        # Bool,
+        # Int8,
+        # Int16,
+        # Int32,
+        # Int64,
+        # Int128,
+        # UInt8,
+        # UInt16,
+        # UInt32,
+        # UInt64,
+        # UInt128,
+        # Float32,
+        # Float64,
+        # String,
+        # Date,
+        # Time,
+        # DateTime,
+        # Dates.CompoundPeriod,
         NTuple{10, Int},
+        StaticArrays.SVector{10,Int},
+        StaticArrays.SMatrix{2,2, Int},
+        StaticArrays.SArray{Tuple{2,2,2}, Int, 3},
         Vector{Int},
-        MyStruct,
-        Dict{String, Int},
+        Vector{Vector{Int}},
+        Vector{Vector{Vector{Int}}},
+        # Union{Missing, Int},
+        # Union{Missing, Vector{Union{Missing, Int}}},
+        # Dict{String, String},
+        # Dict{String, Vector{Int}},
+        # Vector{Vector{Vector{Float64}}},  # Nested Lists
+        Union{String, Int, Float64, Bool},
+        # MyStruct,
+        # Dict{String, MyStruct}, # Write works, but read creates NamedTuple instead of struct
     ]
     t_reads = Float64[]
     t_writes = Float64[]
     t_baselines = Float64[]
     for T in types
         println("Type: ", T)
-        X = [_random_element(T, 5) for i in 1:N]
-        julia_type_in = eltype(X)
-        logical_type = DuckDB.create_logical_type(julia_type_in)
+        
 
+        if T === Union{String, Int, Float64, Bool}
+            # Make generic?
+            logical_type = DuckDB.create_union_type((String, Int, Float64, Bool))
+            X = Vector{T}([_random_element_union() for i in 1:N])
+            julia_type_in = eltype(X)
+        else
+            X = [_random_element(T, 5) for i in 1:N]
+            julia_type_in = eltype(X)
+            logical_type = DuckDB.create_logical_type(julia_type_in)
+        end
         chunks = [DuckDB.DataChunk([logical_type]) for _ in 1:10] # 10 chunks
         DuckDB.set_size.(chunks, N)
 
         Base.GC.@preserve chunks begin
+
+            println("Write Test: ", T)
             t_write = @elapsed for chunk in chunks
                 vec = DuckDB.get_vector(chunk, 1)
                 writer = DuckDB.VecWriter(vec, logical_type, julia_type_in, N)
-                @show writer.julia_type julia_type_in
                 sizehint!(writer, N)
                 for i in 1:N
                     writer[i] = X[i]
                 end
             end
 
+            t_read = 0.0
             t_read = @elapsed for chunk in chunks
                 vec = DuckDB.get_vector(chunk, 1)
                 reader = DuckDB.VecReader(vec, logical_type, julia_type_in, N)
                 julia_type_out = DuckDB.julia_eltype(reader)
-                out = Vector{julia_type_out}(undef, N)
+                out = Vector{julia_type_in}(undef, N)
                 for i in 1:N
                     out[i] = reader[i]
                 end
@@ -638,15 +653,15 @@ _random_element(::Type{Dict{K, V}}, size) where {K,V} = Dict(s => _random_elemen
 
             @test isequal(X,out)
             t_baseline = 0.0
-            if !(T <: Tuple) && !(T <: MyStruct)
-                # Tuple not supported
-                try
-                    data = DuckDB.ColumnConversionData(chunks, 1, logical_type, nothing)
-                    t_baseline = @elapsed DuckDB.convert_column(data)
-                catch e
-                    println("Skipped baseline for type ", T, ", error:", e)
-                end
-            end
+            # if !(T <: Tuple) && !(T <: MyStruct)
+            #     # Tuple not supported
+            #     try
+            #         data = DuckDB.ColumnConversionData(chunks, 1, logical_type, nothing)
+            #         t_baseline = @elapsed DuckDB.convert_column(data)
+            #     catch e
+            #         println("Skipped baseline for type ", T, ", error:", e)
+            #     end
+            # end
             push!(t_reads, t_read)
             push!(t_writes, t_write)
             push!(t_baselines, t_baseline)

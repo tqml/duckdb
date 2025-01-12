@@ -58,6 +58,11 @@ function is_complex_type(type::DUCKDB_TYPE)
     )
 end
 
+
+# Missing, Any
+create_logical_type(::Type{Union{Missing, T}}) where {T} = create_logical_type(T)
+create_logical_type(::Type{Any}) = throw(NotImplementedException("Unsupported type for create_logical_type: Any"))
+
 # Primitive / value types
 create_logical_type(::Type{T}) where {T <: Bool} = DuckDB.LogicalType(DuckDB.DUCKDB_TYPE_BOOLEAN)
 create_logical_type(::Type{T}) where {T <: Int8} = DuckDB.LogicalType(DuckDB.DUCKDB_TYPE_TINYINT)
@@ -211,6 +216,23 @@ function get_union_member_type(type::LogicalType, index::UInt64)
     return LogicalType(duckdb_union_type_member_type(type.handle, index))
 end
 
+
+function create_union_type(types)
+    member_types = [create_logical_type(t) for t in types]
+    member_names = [string(i) for i in 1:length(types)]
+    K = length(types)
+    GC.@preserve member_types member_names begin
+        member_types_handles = [member.handle for member in member_types]
+        println("Create Union Type")
+        union_type = LogicalType(duckdb_create_union_type(member_types_handles, member_names, K))
+        println("Union Type created")
+        if union_type.handle == C_NULL
+            throw(ArgumentError("Failed to create union type"))
+        end
+        return union_type
+    end
+end
+
 ##===--------------------------------------------------------------------===##
 ## List & Array methods
 ##===--------------------------------------------------------------------===##
@@ -231,7 +253,7 @@ function create_logical_type(::Type{NTuple{N, U}}) where {N, U}
     return DuckDB.LogicalType(array_type_handle)
 end
 
-function create_logical_type(::Type{T}) where {K, V, T <: Dict{K, V}}
+function create_logical_type(::Type{T}) where {K, V, T <: AbstractDict{K, V}}
     key_type = create_logical_type(K)
     value_type = create_logical_type(V)
     GC.@preserve key_type value_type begin
