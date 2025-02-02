@@ -21,7 +21,7 @@ end
 @testset "Test using a closed connection" begin
     db = DBInterface.connect(DuckDB.DB, ":memory:")
     con = DBInterface.connect(db)
-    
+
     DuckDB.execute(db, "CREATE TABLE test (a INTEGER)")
     DuckDB.execute(db, "INSERT INTO test VALUES (1)")
     DBInterface.close!(db) # Close only the database object, not the connection
