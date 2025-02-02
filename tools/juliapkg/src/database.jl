@@ -26,10 +26,12 @@ end
 
 function _close_database(db::DuckDBHandle)
     # disconnect from DB
-    if db.handle != C_NULL
-        duckdb_close(db.handle)
+    handle = _get_handle(db)
+    if handle != C_NULL
+        duckdb_close(handle)
+        db.handle = C_NULL
     end
-    return db.handle = C_NULL
+    return
 end
 
 """
@@ -58,10 +60,11 @@ end
 
 function _close_connection(con::Connection)
     # disconnect
-    if con.handle != C_NULL
-        duckdb_disconnect(con.handle)
+    handle = _get_handle(con)
+    if handle != C_NULL
+        duckdb_disconnect(handle)
+        con.handle = C_NULL
     end
-    con.handle = C_NULL
     return
 end
 
@@ -110,8 +113,32 @@ DBInterface.close!(db::DB) = close_database(db)
 DBInterface.close!(con::Connection) = _close_connection(con)
 Base.close(db::DB) = close_database(db)
 Base.close(con::Connection) = _close_connection(con)
-Base.isopen(db::DB) = db.handle.handle != C_NULL
-Base.isopen(con::Connection) = con.handle != C_NULL
+Base.isopen(db::DB) = _get_handle(db.handle) != C_NULL
+Base.isopen(con::Connection) = _get_handle(con) != C_NULL
 
-Base.show(io::IO, db::DuckDB.DB) = print(io, string("DuckDB.DB(", "\"$(db.handle.file)\"", ")"))
-Base.show(io::IO, con::DuckDB.Connection) = print(io, string("DuckDB.Connection(", "\"$(con.db.file)\"", ")"))
+function Base.show(io::IO, db::DuckDB.DB)
+    print(io, string("DuckDB.DB(", "\"$(db.handle.file)\"", ")"))
+    if !isopen(db)
+        print(io, " (closed)")
+    end
+end
+function Base.show(io::IO, con::DuckDB.Connection)
+    print(io, string("DuckDB.Connection(", "\"$(con.db.file)\"", ")"))
+    if !isopen(con)
+        print(io, " (closed)")
+    end
+end
+
+
+_get_handle(con::Union{Connection, DuckDBHandle}) = getfield(con, :handle)
+function Base.getproperty(con::Union{Connection, DuckDBHandle}, name::Symbol)
+    if name == :handle
+        _handle = _get_handle(con)
+        if _handle == C_NULL
+            throw(ConnectionException("Connection is closed"))
+        end
+        return _handle
+    else
+        return getfield(con, name)
+    end
+end
