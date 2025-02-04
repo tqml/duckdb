@@ -39,6 +39,14 @@ function add_result_column(bind_info::BindInfo, name::AbstractString, type::Data
     return add_result_column(bind_info, name, create_logical_type(type))
 end
 
+function add_result_column(bind_info::BindInfo, name::AbstractString, type::Union)
+    return add_result_column(bind_info, name, create_union_type(type))
+end
+
+function add_result_column(bind_info::BindInfo, name::AbstractString, ::Union{Missing, T}) where {T}
+    return add_result_column(bind_info, name, T)
+end
+
 function add_result_column(bind_info::BindInfo, name::AbstractString, type::LogicalType)
     return duckdb_bind_add_result_column(bind_info.handle, name, type.handle)
 end

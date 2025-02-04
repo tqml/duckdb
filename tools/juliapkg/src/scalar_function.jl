@@ -148,10 +148,6 @@ function _udf_parse_function_expr(expr::Expr)
             throw(ArgumentError("parameter name must be a symbol"))
         end
 
-        # if !isa(parameter_type, Symbol)
-        #     throw(ArgumentError("parameter_type must be a symbol"))
-        # end
-
         return parameter, parameter_type
     end
 
@@ -172,6 +168,8 @@ function _udf_parse_function_expr(expr::Expr)
 end
 
 function _udf_generate_conversion_expressions(parameters, logical_type, convert, var_name, chunk_name)
+
+    # ColumnConversionData((chunk,), ix, lt, nothing)
 
     # Example:
     # data_1 = convert(Int, LT[1], chunk, 1)
@@ -215,7 +213,8 @@ function _udf_generate_wrapper(func_expr, func_esc)
         function (info::DuckDB.duckdb_function_info, input::DuckDB.duckdb_data_chunk, output::DuckDB.duckdb_vector)
 
             extra_info_ptr = DuckDB.duckdb_scalar_function_get_extra_info(info)
-            scalar_func::DuckDB.ScalarFunction = unsafe_pointer_to_objref(extra_info_ptr)
+            #scalar_func::DuckDB.ScalarFunction = unsafe_pointer_to_objref(extra_info_ptr)
+            scalar_func = unsafe_pointer_to_objref(extra_info_ptr)
             $log_param_types_name::Vector{LogicalType} = scalar_func.logical_parameters
             $log_return_type_name::LogicalType = scalar_func.logical_return_type
 
@@ -225,28 +224,15 @@ function _udf_generate_wrapper(func_expr, func_esc)
                 $(input_assignments...) # Assign the input values
                 N = Int64(get_size(chunk))
 
-                # initialize the result container, to avoid calling get_array() in the loop
-                result_container = _udf_assign_result_init($return_type, vec)
-
                 # Check data validity
                 validity = $validity_expr
                 chunk_is_valid = all(all_valid.(validity))
                 result_validity = get_validity(vec)
 
-                for $index_name in 1:N
-                    if chunk_is_valid || all(isvalid(v, $index_name) for v in validity)
-                        result::$return_type = $call_expr
-
-                        # Hopefully this optimized away if the type has no missing values
-                        if ismissing(result)
-                            setinvalid(result_validity, $index_name)
-                        else
-                            _udf_assign_result!(result_container, $return_type, vec, result, $index_name)
-                        end
-                    else
-                        setinvalid(result_validity, $index_name)
-                    end
-                end
+                writer = VecWriter(vec, $log_return_type_name, $return_type, N)
+                result = [$call_expr for $index_name in 1:N]
+                write_to_vector(writer, result)
+                #write_to_vector(vec, N, $log_return_type_name, result)
                 return nothing
             catch e
                 duckdb_scalar_function_set_error(
@@ -325,7 +311,8 @@ macro create_scalar_function(func_expr, func_ref = nothing)
     func_name = string(func)
     parameter_names = [p[1] for p in parameters]
     parameter_types = [p[2] for p in parameters]
-    parameter_types_vec = Expr(:vect, parameter_types...) # create a vector expression, e.g. [Int, Int]
+    parameter_types_vec = Expr(:ref, :DataType, parameter_types...)
+
     wrapper_expr = _udf_generate_wrapper(func_expr, func_esc)
 
     id = hash((func_expr, rand(UInt64))) # generate a unique id for the function
@@ -343,45 +330,145 @@ macro create_scalar_function(func_expr, func_ref = nothing)
 
 end
 
-
-
-
-# %% --- Conversions ------------------------------------------ #
-
-
-function _udf_assign_result_init(::Type{T}, vec::Vec) where {T}
-    T_internal = julia_to_duck_type(T)
-    arr = get_array(vec, T_internal)  # this call is quite slow, so we only call it once
-    return arr
-end
-
-function _udf_assign_result_init(::Type{T}, vec::Vec) where {T <: AbstractString}
-    return nothing
-end
-
-function _udf_assign_result!(container, ::Type{T}, vec::Vec, result::T, index) where {T}
-    container[index] = value_to_duckdb(result) # convert the value to duckdb and assign it to the array
-    return nothing
-end
-
-function _udf_assign_result!(container, ::Type{T}, vec::Vec, result::T, index) where {T <: AbstractString}
-    s = string(result)
-    DuckDB.assign_string_element(vec, index, s)
-    return nothing
-end
-
-
-function _udf_convert_chunk(::Type{T}, lt::LogicalType, chunk::DataChunk, ix) where {T <: Number}
-    x::Vector{T} = get_array(chunk, ix, T)
-    return x
-end
-
-function _udf_convert_chunk(::Type{T}, lt::LogicalType, chunk::DataChunk, ix) where {T <: AbstractString}
-    data = ColumnConversionData((chunk,), ix, lt, nothing)
-    return convert_column(data)
-end
+# function _udf_convert_chunk(::Type{T}, lt::LogicalType, chunk::DataChunk, ix) where {T <: Number}
+#     x::Vector{T} = get_array(chunk, ix, T)
+#     return x
+# end
 
 function _udf_convert_chunk(::Type{T}, lt::LogicalType, chunk::DataChunk, ix) where {T}
-    data = ColumnConversionData((chunk,), ix, lt, nothing)
-    return convert_column(data)
+    vec = get_vector(chunk, ix)
+    return VecReader(vec, lt, T, get_size(chunk))
+    #@info "ColumnConversionData" maxlog=1
+    #data = ColumnConversionData((chunk,), ix, lt, nothing)
+    #return convert_column(data)
 end
+
+
+
+# %% --- V2 ------------------------------------------ #
+
+
+function _udf_scalar_main(info::duckdb_function_info, input::duckdb_data_chunk, output::duckdb_vector)
+    scalar_func::ScalarFunctionV2 = unsafe_pointer_to_objref(duckdb_scalar_function_get_extra_info(info))
+    try
+        vec = Vec(output)
+        chunk = DataChunk(input, false) # create a data chunk object, that does not own the data
+        scalar_func.f_scalar(scalar_func, chunk, vec)
+    catch e
+        duckdb_scalar_function_set_error(info, "Exception in ScalarFunctionV2: " * get_exception_info())
+    end
+end
+
+
+mutable struct ScalarFunctionV2
+    handle::duckdb_scalar_function
+    name::AbstractString
+    parameters::Vector{DataType}
+    return_type::DataType
+    logical_parameters::Vector{LogicalType}
+    logical_return_type::LogicalType
+    f_scalar::Function
+
+    function ScalarFunctionV2(name, parameters, return_type, f_scalar)
+        handle = duckdb_create_scalar_function()
+        duckdb_scalar_function_set_name(handle, name)
+
+        logical_parameters = Vector{LogicalType}()
+        for parameter_type in parameters
+            push!(logical_parameters, create_logical_type(parameter_type))
+        end
+        logical_return_type = create_logical_type(return_type)
+
+        for param in logical_parameters
+            duckdb_scalar_function_add_parameter(handle, param.handle)
+        end
+        duckdb_scalar_function_set_return_type(handle, logical_return_type.handle)
+
+        # Wrap function
+        wrapper = _udf_gen_wrapper2(parameters, return_type, f_scalar)
+
+        result = new(handle, name, [parameters...], return_type, logical_parameters, logical_return_type, wrapper)
+        finalizer(_destroy_scalar_function_v2, result)
+
+        #writer = vec -> VecWriter(vec, logical_return_type, return_type, get_size(vec))
+        #readers = [vec -> VecReader(vec, lt, dt, get_size(vec)) for (lt, dt) in zip(logical_parameters, parameters)]
+        #info = ScalarFunctionInfo(f_scalar, readers, writer)
+        #duckdb_scalar_function_set_extra_info(handle, pointer_from_objref(info), C_NULL)
+
+        duckdb_scalar_function_set_extra_info(handle, pointer_from_objref(result), C_NULL)
+        duckdb_scalar_function_set_function(
+            handle,
+            @cfunction(_udf_scalar_main, Cvoid, (duckdb_function_info, duckdb_data_chunk, duckdb_vector))
+        )
+
+
+        return result
+    end
+end
+
+function _udf_gen_wrapper2(types::Tuple, return_type::Type{T_out}, f_scalar::Function) where {T_out}
+    local T_in = Tuple{types...}
+    local T_reader = Tuple{(VecReader{T} for T in types)...}
+    #let types = types, return_type = return_type, f_scalar = f_scalar, T_in=T_in, T_reader_T_reader=T_reader
+    let N_types = _tuple_count(types)
+        @show types return_type T_in T_reader N_types
+
+        if N_types == 0
+            inner_wrapper = (_, f_scalar, N) -> begin
+                return [f_scalar() for i in 1:N]
+            end
+        elseif N_types == 1
+            inner_wrapper = (readers, f_scalar, N) -> begin
+                reader1 = readers[1]
+                return [f_scalar(reader1[i]) for i in 1:N]
+            end
+        elseif N_types == 2
+            inner_wrapper = (readers, f_scalar, N) -> begin
+                reader1 = readers[1]
+                reader2 = readers[2]
+                return [f_scalar(reader1[i], reader2[i]) for i in 1:N]
+            end
+        elseif N_types == 3
+            inner_wrapper =
+                (readers, f_scalar, N) -> begin
+                    reader1 = readers[1]
+                    reader2 = readers[2]
+                    reader3 = readers[3]
+                    return [f_scalar(reader1[i], reader2[i], reader3[i]) for i in 1:N]
+                end
+        else
+            inner_wrapper =
+                (readers, f_scalar, N) -> begin
+                    return [f_scalar([reader[i] for reader in readers]...) for i in 1:N]
+                end
+        end
+
+
+        return (scalar_func::ScalarFunctionV2, chunk::DataChunk, vec::Vec) -> begin
+            N = Int64(get_size(chunk))
+            #writer::VecWriter{return_type} = VecWriter(vec, scalar_func.logical_return_type, return_type, N)
+            N_types = _tuple_count(types)
+            logical_types = scalar_func.logical_parameters
+            logical_type_return = scalar_func.logical_return_type
+            readers =
+                [convert_column(ColumnConversionData((chunk,), i, logical_types[i], nothing)) for i in 1:N_types]
+            result = inner_wrapper(readers, f_scalar, N)
+            write_to_vector(vec, N, logical_type_return, result)
+        end
+    end
+end
+
+function _destroy_scalar_function_v2(fun)
+    # disconnect from DB
+    if fun.handle != C_NULL
+        duckdb_destroy_scalar_function(fun.handle)
+    end
+    fun.handle = C_NULL
+    return
+end
+
+
+register_scalar_function(db::DB, fun::ScalarFunctionV2) =
+    duckdb_register_scalar_function(db.main_connection.handle, fun.handle)
+register_scalar_function(con::Connection, fun::ScalarFunctionV2) =
+    duckdb_register_scalar_function(con.handle, fun.handle)

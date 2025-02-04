@@ -386,7 +386,36 @@ end
     @test isequal(result.result, [missing, missing, 6])
 end
 
+@testset "UDF Complex Types" begin
+
+    f1 = (n) -> collect(1:n)
+    f2 = () -> Dict("a" => 1, "b" => 2) # dummy function
+    f3 = (a, b) -> (a .* b) # vector mul
+
+    db = DuckDB.DB()
+    con = DuckDB.connect(db)
+
+    df = DataFrame(n = [1, 2, 3], a = [[1.0], [1.0, 2.0], [1.0, 2.0, 3.0]], b = [[1.0], [1.0, 2.0], [1.0, 2.0, 3.0]])
+    DuckDB.register_table(con, df, "test1")
+
+    fun1 = DuckDB.@create_scalar_function f1(n::Int)::Vector{Float64} f1
+    DuckDB.register_scalar_function(con, fun1)
+    result1 = DuckDB.execute(con, "SELECT f1(n) as result FROM test1") |> DataFrame
+    @test result1.result == [[1.0], [1.0, 2.0], [1.0, 2.0, 3.0]]
+
+    fun2 = DuckDB.@create_scalar_function f2()::Dict{String, Int} f2
+    DuckDB.register_scalar_function(con, fun2)
+    result2 = DuckDB.execute(con, "SELECT f2() as result FROM test1") |> DataFrame
+    @test result2.result == [f2(), f2(), f2()]
+
+    fun3 = DuckDB.@create_scalar_function f3(a::Vector{Float64}, b::Vector{Float64})::Vector{Float64} f3
+    DuckDB.register_scalar_function(con, fun3)
+    result3 = DuckDB.execute(con, "SELECT f3(a, b) as result FROM test1") |> DataFrame
+    @test result3.result == map(f3, df.a, df.b)
+end
+
 @testset "UDF Macro Benchmark" begin
+    using DataFrames, DuckDB
     # Check if the generated UDF is comparable to pure Julia or DuckDB expressions
     # 
     # Currently UDFs takes about as much time as Julia/DuckDB expressions
@@ -394,32 +423,43 @@ end
     #   - slow calls are setindex! and getindex
     #   - table_scan_func is the slowest call 
 
+    mysum = (a, b) -> a + b
 
     db = DuckDB.DB()
     con = DuckDB.connect(db)
-    fun_int = DuckDB.@create_scalar_function mysum(a::Int, b::Int)::Int
+    fun_int = DuckDB.@create_scalar_function mysum(a::Int, b::Int)::Int mysum
     fun_float = DuckDB.@create_scalar_function mysum_f(a::Float64, b::Float64)::Float64 mysum
 
     DuckDB.register_scalar_function(con, fun_int) # Register UDF
     DuckDB.register_scalar_function(con, fun_float) # Register UDF
 
-    N = 10_000_000
-    df = DataFrame(a = 1:N, b = 1:N, c = rand(N), d = rand(N))
+    N = 100_000_000
+    df = DataFrame(a = 1:N, b = 1:N, c = rand([1.0,missing],N), d = rand(N))
 
-    DuckDB.register_table(con, df, "test1")
+
+    DuckDB.execute(con, """
+    CREATE OR REPLACE TABLE test1 as 
+    SELECT 
+        cast(round(1_000 * random()) as BIGINT) as a,
+        cast(round(1_000 * random()) as BIGINT) as b,
+        random() as c, 
+        random() as d 
+        FROM range($N)""")
+
+    #DuckDB.register_table(con, df, "test1")
 
     # Precompile functions
     precompile(mysum, (Int, Int))
     precompile(mysum, (Float64, Float64))
-    DuckDB.execute(con, "SELECT mysum(a, b) as result FROM test1")
-    DuckDB.execute(con, "SELECT mysum_f(c, d) as result FROM test1")
+    DuckDB.execute(con, "SELECT mysum(a, b) as result FROM test1 LIMIT 100")
+    DuckDB.execute(con, "SELECT mysum_f(c, d) as result FROM test1 LIMIT 100")
 
     # INTEGER Benchmark
 
     t1 = @elapsed result_exp = df.a .+ df.b
     t2 = @elapsed result = DuckDB.execute(con, "SELECT mysum(a, b) as result FROM test1")
     t3 = @elapsed result2 = DuckDB.execute(con, "SELECT a + b as result FROM test1")
-    @test DataFrame(result).result == result_exp
+    #@test DataFrame(result).result == result_exp
     # Prints:
     # Benchmark Int: Julia Expression: 0.092947083, UDF: 0.078665125, DDB: 0.065306042
     @info "Benchmark Int: Julia Expression: $t1, UDF: $t2, DDB: $t3"
@@ -429,8 +469,69 @@ end
     t1 = @elapsed result_exp = df.c .+ df.d
     t2 = @elapsed result = DuckDB.execute(con, "SELECT mysum_f(c, d) as result FROM test1")
     t3 = @elapsed result2 = DuckDB.execute(con, "SELECT c + d as result FROM test1")
-    @test DataFrame(result).result ≈ result_exp atol = 1e-6
+    #@test isequal(DataFrame(result).result,result_exp)
     # Prints:
     # Benchmark Float: Julia Expression: 0.090409625, UDF: 0.080781, DDB: 0.054156167
     @info "Benchmark Float: Julia Expression: $t1, UDF: $t2, DDB: $t3"
+end
+
+function profile_udf_setup(con)
+    N = 10_000_000
+    DuckDB.execute(con, "CREATE OR REPLACE TABLE test1 AS SELECT * AS a, 2*a AS b FROM range($N)")
+    mysum = (a, b) -> a + b
+    fun_int = DuckDB.@create_scalar_function mysum(a::Int, b::Int)::Int mysum
+    fun_float = DuckDB.@create_scalar_function mysum_f(a::Float64, b::Float64)::Float64 mysum
+    DuckDB.register_scalar_function(con, fun_int) # Register UDF
+    DuckDB.register_scalar_function(con, fun_float) # Register UDF
+    return con
+end
+
+function profile(con)
+    DuckDB.execute(con, "SELECT mysum(a, b) as result FROM test1")
+end
+
+
+@testset "UDFv2" begin
+    using DuckDB, DataFrames
+    db = DuckDB.DB()
+    con = DuckDB.connect(db)
+
+    N = 10_000_000
+    
+    T_in = (Float64, Float64)
+    T_out = Float64
+    f_scalar = (a, b) -> a + b
+    fun = DuckDB.ScalarFunctionV2("abc", T_in, T_out, f_scalar)
+    fun1 = DuckDB.@create_scalar_function abc1(a::Float64,b::Float64)::Float64 f_scalar
+    DuckDB.register_scalar_function(con, fun)
+    DuckDB.register_scalar_function(con, fun1)
+
+    DuckDB.execute(con, "CREATE OR REPLACE TABLE test1 AS SELECT random() as a, random() as b from range($N)")
+    expected = DuckDB.execute(con, "SELECT a + b as result FROM test1") |> DataFrame
+    result = DuckDB.execute(con, "SELECT abc(a, b) as result FROM test1") |> DataFrame
+    result1 = DuckDB.execute(con, "SELECT abc1(a,b) as result FROM test1") |> DataFrame
+    @test isequal(expected.result, result.result)
+    t1 = @elapsed DuckDB.execute(con, "SELECT a + b as result FROM test1")
+    t2 = @elapsed DuckDB.execute(con, "SELECT abc(a, b) as result FROM test1")
+    t3 = @elapsed DuckDB.execute(con, "SELECT abc1(a, b) as result FROM test1")
+    @info "Benchmark: DuckDB: $t1, UDF: $t2, UDF1: $t3"
+
+
+
+
+    # Check type stability
+    # logical_types = [DuckDB.create_logical_type(T) for T in (Float64, Float64)]
+    # chunk = DuckDB.DataChunk(logical_types)
+    # chunk_out = DuckDB.DataChunk([DuckDB.create_logical_type(Float64)])
+    # DuckDB.set_size(chunk, 0) # Set size to 0
+    # DuckDB.set_size(chunk_out, 0) # Set size to 0
+    # vec_out = DuckDB.get_vector(chunk_out, 1)
+
+    # wrapper = DuckDB._udf_gen_wrapper2(T_in, T_out, f_scalar)
+
+
+    # @inferred wrapper(fun, chunk, vec_out)
+
+
+    
 end

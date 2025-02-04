@@ -4582,7 +4582,7 @@ function duckdb_vector_assign_string_element_len(vector, index, str, str_len)
     return ccall(
         (:duckdb_vector_assign_string_element_len, libduckdb),
         Cvoid,
-        (duckdb_vector, idx_t, Cstring, idx_t),
+        (duckdb_vector, idx_t, Ptr{UInt8}, idx_t),
         vector,
         index - 1,
         str,

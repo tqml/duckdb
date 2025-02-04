@@ -139,6 +139,18 @@ end
     DBInterface.close!(con)
 end
 
+@testset "Test DataFrame with Fixed Size Arrays" begin
+    using DuckDB, DataFrames
+
+    con = DBInterface.connect(DuckDB.DB)
+    my_df = DataFrame(a = [1, 2, 3], b = [(1, 2), (3, 4), (5, 6)], c = [Dict("a" => 1), Dict("b" => 2), Dict("c" => 3)])
+
+    # TODO Arrays/Tuples not supported yet, but they should throw an error and do not crash
+    DuckDB.register_table(con, my_df, "my_df")
+    @test_throws DuckDB.NotImplementedException DataFrame(DBInterface.execute(con, "SELECT * FROM my_df"))
+
+end
+
 @testset "Test table scan with various types" begin
     for tblf in [Tables.columntable, Tables.rowtable]
         con = DBInterface.connect(DuckDB.DB)
@@ -200,6 +212,49 @@ end
         DBInterface.close!(con)
     end
 end
+
+@testset "Test table scan with all_types()" begin
+    using DuckDB, DataFrames
+    db = DBInterface.connect(DuckDB.DB)
+    con = DBInterface.connect(db)
+
+    df = DataFrame(
+        DBInterface.execute(
+            con,
+            """SELECT * EXCLUDE(time, time_tz, fixed_int_array, fixed_varchar_array, fixed_nested_int_array,
+            		fixed_nested_varchar_array, fixed_struct_array, struct_of_fixed_array, fixed_array_of_int_list,
+            		list_of_fixed_int_array, varint)
+                , CASE WHEN time = '24:00:00'::TIME THEN '23:59:59.999999'::TIME ELSE time END AS time
+                , CASE WHEN time_tz = '24:00:00-15:59:59'::TIMETZ THEN '23:59:59.999999-15:59:59'::TIMETZ ELSE time_tz END AS time_tz
+            FROM test_all_types()
+            """
+        )
+    )
+
+    cols = names(df)
+    for col in cols
+        println("Testing column: ", col)
+        if col == "union"
+            println("Skip union column")
+            # TODO "Union type not supported yet"
+            @test_broken false
+            continue
+        end
+        df_sub = df[!, [col]]
+        DuckDB.register_table(db, df_sub, "test_all")
+        df_out = DataFrame(DBInterface.execute(con, "SELECT * FROM test_all"))
+
+        x1 = df_out[!, col]
+        x2 = df_sub[!, col]
+        @test length(x1) == length(x2)
+        for i in 1:length(x1)
+            @test isequal(x1[i], x2[i])
+        end
+        #@test isequal(df_out[!, col], df_sub[!, col])
+        DuckDB.unregister_table(db, "test_all")
+    end
+end
+
 
 @testset "Test DataFrame scan projection pushdown" begin
     con = DBInterface.connect(DuckDB.DB)

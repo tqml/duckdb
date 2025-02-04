@@ -188,3 +188,133 @@
     @test isequal(df.array_of_structs, [[], [(a = missing, b = missing), (a = 42, b = "🦆🦆🦆🦆🦆🦆"), missing], missing])
     @test isequal(df.map, [Dict(), Dict("key1" => "🦆🦆🦆🦆🦆🦆", "key2" => "goose"), missing])
 end
+
+@testset "Test Logical Types" begin
+    using DuckDB, UUIDs
+    import DuckDB: create_logical_type, get_type_id, get_struct_child_name, get_struct_child_type, get_list_child_type
+
+    # Test Struct Types
+    T = @NamedTuple begin
+        a::Union{Missing, Int32}
+        b::Union{Missing, String}
+    end
+    T2 = @NamedTuple begin
+        a::Union{Missing, T}
+        b::Union{Missing, Vector{T}}
+    end
+
+    lt = DuckDB.create_logical_type(T)
+    Base.GC.gc(true)
+    @test DuckDB.is_struct_type(lt)
+    @test DuckDB.get_type_id(lt) == DuckDB.DUCKDB_TYPE_STRUCT
+    @test DuckDB.get_struct_child_count(lt) == 2
+    @test get_struct_child_name(lt, 1) == "a"
+    @test get_struct_child_name(lt, 2) == "b"
+    @test get_type_id(get_struct_child_type(lt, 1)) == DuckDB.DUCKDB_TYPE_INTEGER
+    @test get_type_id(get_struct_child_type(lt, 2)) == DuckDB.DUCKDB_TYPE_VARCHAR
+
+
+    lt2 = DuckDB.create_logical_type(T2)
+    Base.GC.gc(true)
+    @test DuckDB.is_struct_type(lt2)
+    @test get_type_id(lt2) == DuckDB.DUCKDB_TYPE_STRUCT
+    @test DuckDB.get_struct_child_count(lt2) == 2
+    @test get_struct_child_name(lt2, 1) == "a"
+    @test get_struct_child_name(lt2, 2) == "b"
+    @test get_type_id(get_struct_child_type(lt2, 1)) == DuckDB.DUCKDB_TYPE_STRUCT
+    @test get_type_id(get_struct_child_type(lt2, 2)) == DuckDB.DUCKDB_TYPE_LIST
+    @test get_type_id(get_list_child_type(get_struct_child_type(lt2, 2))) == DuckDB.DUCKDB_TYPE_STRUCT
+
+    # test alias for NamedTuple
+    @test DuckDB.get_alias(lt) == "" # no alias set
+    DuckDB.set_alias!(lt, "MyStruct1")
+    DuckDB.set_alias!(lt2, "MyStruct2")
+    GC.gc()
+    @test DuckDB.get_alias(lt) == "MyStruct1"
+    @test DuckDB.get_alias(lt2) == "MyStruct2"
+    DuckDB.set_alias!(lt, "") # reset alias
+    @test DuckDB.get_alias(lt) == ""
+
+
+    # Test Arrays/Tuples
+    T = NTuple{3, Int64}
+    lt = create_logical_type(T)
+    @test get_type_id(lt) == DuckDB.DUCKDB_TYPE_ARRAY
+    @test get_type_id(DuckDB.get_array_child_type(lt)) == DuckDB.DuckDB.DUCKDB_TYPE_BIGINT
+    @test DuckDB.get_array_child_size(lt) == 3
+
+    # Test Nested Arrays/Tuples
+    T = NTuple{3, NTuple{4, Int64}}
+    lt = create_logical_type(T)
+    @test get_type_id(lt) == DuckDB.DUCKDB_TYPE_ARRAY
+    @test DuckDB.get_array_child_size(lt) == 3
+    lt_child = DuckDB.get_array_child_type(lt)
+    @test get_type_id(DuckDB.get_array_child_type(lt_child)) == DuckDB.DuckDB.DUCKDB_TYPE_BIGINT
+    @test DuckDB.get_array_child_size(lt_child) == 4
+
+    # Test List
+    T = Vector{Int64}
+    lt = create_logical_type(T)
+    @test get_type_id(get_list_child_type(lt)) == DuckDB.DUCKDB_TYPE_BIGINT
+
+    # Test Union
+    T = Union{Float64, Int64, String} # sort by Name
+    lt = DuckDB.create_union_type(T)
+    @test get_type_id(lt) == DuckDB.DUCKDB_TYPE_UNION
+    @test DuckDB.get_union_member_count(lt) == 3
+    @test get_type_id(DuckDB.get_union_member_type(lt, 1)) == DuckDB.DUCKDB_TYPE_DOUBLE
+    @test get_type_id(DuckDB.get_union_member_type(lt, 2)) == DuckDB.DUCKDB_TYPE_BIGINT
+    @test get_type_id(DuckDB.get_union_member_type(lt, 3)) == DuckDB.DUCKDB_TYPE_VARCHAR
+
+
+    # Test UUID
+    x = UUIDs.uuid4()
+    lt = create_logical_type(typeof(x))
+    @test get_type_id(lt) == DuckDB.DUCKDB_TYPE_UUID
+
+
+    # Test Map
+    T = Dict{String, Int64}
+    lt = create_logical_type(T)
+    @test get_type_id(lt) == DuckDB.DUCKDB_TYPE_MAP
+    @test get_type_id(DuckDB.get_map_key_type(lt)) == DuckDB.DUCKDB_TYPE_VARCHAR
+    @test get_type_id(DuckDB.get_map_value_type(lt)) == DuckDB.DUCKDB_TYPE_BIGINT
+
+    # 
+end
+
+@testset "Test UUIDs" begin
+    using UUIDs, DataFrames, DuckDB, DBInterface
+    expected = UUID("eeccb8c5-9943-b2bb-bb5e-222f4e14b687")
+    con = DBInterface.connect(DuckDB.DB)
+    res = DataFrame(DBInterface.execute(con, "SELECT CAST('eeccb8c5-9943-b2bb-bb5e-222f4e14b687' as UUID) as x;"))
+    @test res.x[1] == expected
+
+    DuckDB.register_table(con, res, "test_uuid")
+    res = DataFrame(DBInterface.execute(
+        con,
+        """
+SELECT 
+ x, CAST('eeccb8c5-9943-b2bb-bb5e-222f4e14b687' as UUID) == x as equal
+FROM test_uuid
+"""
+    ))
+
+    @test res.x[1] == expected
+    @test res.equal[1] == true
+end
+
+
+
+@testset "Logical Type String, Blob, Bit" begin
+    import DuckDB: get_type_id
+    s = "hello world"
+    X = codeunits(s)
+    T = typeof(X)
+
+    lt = DuckDB.create_logical_type(T)
+    type_id = get_type_id(lt)
+    @show T type_id
+
+    @test type_id === DuckDB.DUCKDB_TYPE_BLOB
+end

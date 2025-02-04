@@ -18,10 +18,6 @@ end
 
 table_result_type(tbl, entry) = Core.Compiler.typesubtract(eltype(tbl[entry]), Missing, 1)
 
-julia_to_duck_type(::Type{Date}) = Int32
-julia_to_duck_type(::Type{Time}) = Int64
-julia_to_duck_type(::Type{DateTime}) = Int64
-julia_to_duck_type(::Type{T}) where {T} = T
 
 value_to_duckdb(val::Date) = convert(Int32, Dates.date2epochdays(val) - ROUNDING_EPOCH_TO_UNIX_EPOCH_DAYS)
 value_to_duckdb(val::Time) = convert(Int64, Dates.value(val) / 1000)
@@ -44,16 +40,12 @@ function tbl_scan_column(
     ::Type{JL_TYPE}
 ) where {DUCK_TYPE, JL_TYPE}
     vector::Vec = DuckDB.get_vector(output, result_idx)
-    result_array::Vector{DUCK_TYPE} = DuckDB.get_array(vector, DUCK_TYPE)
-    validity::ValidityMask = DuckDB.get_validity(vector)
-    for i::Int64 in 1:scan_count
-        val = getindex(input_column, row_offset + i)
-        if val === missing
-            DuckDB.setinvalid(validity, i)
-        else
-            result_array[i] = value_to_duckdb(val)
-        end
+    lt = get_logical_type(vector)
+    writer = VecWriter(vector, lt, JL_TYPE, scan_count)
+    for i in 1:scan_count
+        writer[i] = getindex(input_column, row_offset + i)
     end
+    return
 end
 
 function tbl_scan_string_column(
@@ -78,11 +70,7 @@ function tbl_scan_string_column(
     end
 end
 
-function tbl_scan_function(tbl, entry)
-    result_type = table_result_type(tbl, entry)
-    if result_type <: AbstractString
-        return tbl_scan_string_column
-    end
+function get_tbl_scan_function(tbl, entry)
     return tbl_scan_column
 end
 
@@ -105,7 +93,7 @@ function tbl_bind_function(info::DuckDB.BindInfo)
     scan_functions::Vector{Function} = Vector()
     for entry in Tables.columnnames(tbl)
         result_type = table_result_type(tbl, entry)
-        scan_function = tbl_scan_function(tbl, entry)
+        scan_function = get_tbl_scan_function(tbl, entry)
         push!(input_columns, tbl[entry])
         push!(scan_types, eltype(tbl[entry]))
         push!(result_types, julia_to_duck_type(result_type))
