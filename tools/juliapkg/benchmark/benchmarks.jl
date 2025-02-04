@@ -1,4 +1,4 @@
-using BenchmarkTools, DuckDB, Dates, DataFrames, Tables
+using BenchmarkTools, DuckDB, Dates, DataFrames, Tables, StaticArrays
 
 const SUITE = BenchmarkGroup()
 

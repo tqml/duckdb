@@ -19,6 +19,10 @@ function _destroy_value(val::Value)
     return
 end
 
+function get_type(val::Value)::LogicalType
+    return LogicalType(duckdb_get_value_type(val.handle))
+end
+
 getvalue(val::Value, ::Type{T}) where {T <: Int64} = duckdb_get_int64(val.handle)
 function getvalue(val::Value, ::Type{T}) where {T <: String}
     ptr = duckdb_get_varchar(val.handle)

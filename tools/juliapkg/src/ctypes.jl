@@ -21,6 +21,12 @@ Can be obtained with:
 """
 const ROUNDING_EPOCH_TO_UNIX_EPOCH_MS = 62167219200000
 
+"""The number of microseconds in a day in a duckdb_interval"""
+const INTERVAL_US_PER_DAY = 24 * 3600 * 1_000_000
+
+"""The number of days in a month in a duckdb_interval"""
+const INTERVAL_DAYS_PER_MONTH = 30
+
 
 """DuckDB index type"""
 const idx_t = UInt64 # DuckDB index type
@@ -449,7 +455,7 @@ end
 
 _wrap_missing(x, yes) = ifelse(yes, Union{Missing, x}, x)
 
-function duckdb_type_to_julia_type_missing(x, no_missing=false)
+function duckdb_type_to_julia_type_missing(x, no_missing = false)
     x = duckdb_type_to_julia_type(x)
     if no_missing
         return x
@@ -491,25 +497,25 @@ function duckdb_type_to_julia_type(x, wrap_missing = true)
         end
         struct_names_tuple = Tuple(x for x in struct_names)
         return Union{Missing, NamedTuple{struct_names_tuple}}
-    # elseif type_id == DUCKDB_TYPE_STRUCT
-    #     child_count = get_struct_child_count(x)
-    #     struct_names::Vector{Symbol} = Vector()
-    #     for i in 1:child_count
-    #         child_name::Symbol = Symbol(get_struct_child_name(x, i))
-    #         push!(struct_names, child_name)
-    #     end
-    #     # TODO finish 
-    #     struct_types::Vector{DataType} = Vector()
-    #     for i in 1:child_count
-    #         child_type = get_struct_child_type(x, i)
-    #         child_type_julia = duckdb_type_to_julia_type(child_type, false)
-    #         push!(struct_types, child_type_julia)
-    #     end
-    #     struct_names_tuple = Tuple(x for x in struct_names)
-    #     struct_types_tuple = Tuple(x for x in struct_types)
-    #     return _wrap_missing(NamedTuple{struct_names_tuple, Tuple{struct_types_tuple...}}, wrap_missing)
-    #     #return Union{Missing, NamedTuple{struct_names_tuple,Tuple{struct_types_tuple...}}}
-    #     #return Union{Missing, NamedTuple{struct_names_tuple}}
+        # elseif type_id == DUCKDB_TYPE_STRUCT
+        #     child_count = get_struct_child_count(x)
+        #     struct_names::Vector{Symbol} = Vector()
+        #     for i in 1:child_count
+        #         child_name::Symbol = Symbol(get_struct_child_name(x, i))
+        #         push!(struct_names, child_name)
+        #     end
+        #     # TODO finish 
+        #     struct_types::Vector{DataType} = Vector()
+        #     for i in 1:child_count
+        #         child_type = get_struct_child_type(x, i)
+        #         child_type_julia = duckdb_type_to_julia_type(child_type, false)
+        #         push!(struct_types, child_type_julia)
+        #     end
+        #     struct_names_tuple = Tuple(x for x in struct_names)
+        #     struct_types_tuple = Tuple(x for x in struct_types)
+        #     return _wrap_missing(NamedTuple{struct_names_tuple, Tuple{struct_types_tuple...}}, wrap_missing)
+        #     #return Union{Missing, NamedTuple{struct_names_tuple,Tuple{struct_types_tuple...}}}
+        #     #return Union{Missing, NamedTuple{struct_names_tuple}}
     elseif type_id == DUCKDB_TYPE_UNION
         member_count = get_union_member_count(x)
         member_types::Vector{DataType} = Vector()
@@ -518,6 +524,10 @@ function duckdb_type_to_julia_type(x, wrap_missing = true)
             push!(member_types, member_type)
         end
         return Union{Missing, member_types...}
+    elseif type_id == DUCKDB_TYPE_MAP
+        key_type = duckdb_type_to_julia_type(get_map_key_type(x))
+        value_type = duckdb_type_to_julia_type(get_map_value_type(x))
+        return Dict{key_type, value_type}
     end
     if !haskey(JULIA_TYPE_MAP, type_id)
         throw(NotImplementedException(string("Unsupported type for duckdb_type_to_julia_type: ", type_id)))
@@ -538,7 +548,7 @@ julia_to_duck_type(::Type{Int128}) = duckdb_hugeint
 julia_to_duck_type(::Type{UInt128}) = duckdb_uhugeint
 julia_to_duck_type(::Type{String}) = duckdb_string_t
 julia_to_duck_type(::Type{T}) where {T} = T
-julia_to_duck_type(::Type{Union{Missing,T}}) where {T} = T
+julia_to_duck_type(::Type{Union{Missing, T}}) where {T} = T
 
 
 
@@ -591,12 +601,12 @@ function convert_bit(data::duckdb_bit)
     if m != 0
         d = d + 1 # Amount of UInt64s needed
     end
-    ceil(Int, data.size / sizeof(UInt64))
+    return ceil(Int, data.size / sizeof(UInt64))
 end
 
 _copy_blob(blob::duckdb_blob) = copy(unsafe_wrap(Vector{UInt8}, blob.data, blob.length))
 
-function _create_blob(data::AbstractArray{UInt8}) 
+function _create_blob(data::AbstractArray{UInt8})
     # TODO memory leak?
     size = length(data) * sizeof(UInt8)
     ptr = duckdb_malloc(size)
@@ -678,47 +688,64 @@ Base.convert(::Type{Dates.DateTime}, val::duckdb_timestamp_ns) =
 Base.convert(::Type{Dates.CompoundPeriod}, val::duckdb_interval) =
     Dates.CompoundPeriod(Dates.Month(val.months), Dates.Day(val.days), Dates.Microsecond(val.micros))
 
-_destruct_period_ms(val::Year)::NTuple{3,Int} = (Dates.value(val) * 12, 0, 0)
-_destruct_period_ms(val::Month)::NTuple{3,Int} = (Dates.value(val), 0, 0)
-_destruct_period_ms(val::Week)::NTuple{3,Int} = (0, Dates.days(val), 0)
-_destruct_period_ms(val::Day)::NTuple{3,Int} = (0, Dates.days(val), 0)
-_destruct_period_ms(val::Union{Hour, Minute, Second})::NTuple{3,Int} = (0, 0, Dates.seconds(val) * 1_000_000)
-_destruct_period_ms(val::Millisecond)::NTuple{3,Int} = (0, 0, Dates.value(val * 1_000))
-_destruct_period_ms(val::Microsecond)::NTuple{3,Int} = (0, 0, Dates.value(val))
+_destruct_period_ms(val::Year)::NTuple{3, Int} = (Dates.value(val) * 12, 0, 0)
+_destruct_period_ms(val::Month)::NTuple{3, Int} = (Dates.value(val), 0, 0)
+_destruct_period_ms(val::Week)::NTuple{3, Int} = (0, Dates.days(val), 0)
+_destruct_period_ms(val::Day)::NTuple{3, Int} = (0, Dates.days(val), 0)
+_destruct_period_ms(val::Union{Hour, Minute, Second})::NTuple{3, Int} = (0, 0, Dates.seconds(val) * 1_000_000)
+_destruct_period_ms(val::Millisecond)::NTuple{3, Int} = (0, 0, Dates.value(val * 1_000))
+_destruct_period_ms(val::Microsecond)::NTuple{3, Int} = (0, 0, Dates.value(val))
 
-Base.convert(::Type{duckdb_interval}, val::Day) = duckdb_interval(0, Dates.value(val), 0)
 Base.convert(::Type{duckdb_interval}, val::Month) = duckdb_interval(Dates.value(val), 0, 0)
-Base.convert(::Type{duckdb_interval}, val::Microsecond) = duckdb_interval(0, 0, Dates.value(val))
+function Base.convert(::Type{duckdb_interval}, val::Day)
+    months = 0
+    days = Dates.value(val)
+    if days > INTERVAL_DAYS_PER_MONTH # In duckdb a month is 30 days
+        a, b = divrem(days, INTERVAL_DAYS_PER_MONTH)
+        months += a
+        days = b
+    end
+    return duckdb_interval(months, days, 0)
+end
+function Base.convert(::Type{duckdb_interval}, val::Microsecond)
+    # Reduce to days, months, microseconds
+    months = 0
+    days = 0
+    ms = Dates.value(val)
+    if ms > INTERVAL_US_PER_DAY
+        a, b = divrem(ms, INTERVAL_US_PER_DAY)
+        days += a
+        ms = b
+    end
+    if days > INTERVAL_DAYS_PER_MONTH
+        a, b = divrem(days, INTERVAL_DAYS_PER_MONTH)
+        months += a
+        days = b
+    end
+    return duckdb_interval(months, days, ms)
+end
 Base.convert(::Type{duckdb_interval}, val::T) where {T <: Dates.Period} = duckdb_interval(_destruct_period_ms(val)...)
 
 function Base.convert(::Type{duckdb_interval}, val::Dates.CompoundPeriod)
     m, d, us = 0, 0, 0
     for p in val.periods
-        mi::Int, di::Int, usi::Int = _destruct_period_ms(p)::NTuple{3,Int}
+        # Keep proper type annotations otherwise Julia does not figure out the type and produces
+        # inefficient code.
+        mi::Int, di::Int, usi::Int = _destruct_period_ms(p)::NTuple{3, Int}
         m += mi
         d += di
         us += usi
     end
-    # intervals::Vector{duckdb_interval} = [convert(duckdb_interval, p)::duckdb_interval for p in val.periods]
-    # for i in intervals
-    #     m += i.months
-    #     d += i.days
-    #     us += i.micros
-    # end
-
     # Check for overflows
-    US_PER_DAY = 24 * 3600 * 1_000_000
-    DAYS_PER_MONTH = 30
-
-    if us > US_PER_DAY
-        a, b = divrem(us, US_PER_DAY)
+    if us > INTERVAL_US_PER_DAY
+        a, b = divrem(us, INTERVAL_US_PER_DAY)
         d += a
         us = b
     end
 
     # In duckdb a month is 30 days
-    if d > DAYS_PER_MONTH
-        a, b = divrem(d, DAYS_PER_MONTH)
+    if d > INTERVAL_DAYS_PER_MONTH
+        a, b = divrem(d, INTERVAL_DAYS_PER_MONTH)
         m += a
         d = b
     end
@@ -729,8 +756,10 @@ end
 
 
 function Base.convert(::Type{UUID}, val::duckdb_hugeint)
+    # Int128(val.lower) + Int128(val.upper) << 64
     hugeint = convert(Int128, val)
-    base_value = Int128(170141183460469231731687303715884105727)
+    # base_value = Int128(170141183460469231731687303715884105727)
+    base_value = typemax(Int128)
     if hugeint < 0
         return UUID(UInt128(hugeint + base_value + 1))
     else
@@ -738,13 +767,27 @@ function Base.convert(::Type{UUID}, val::duckdb_hugeint)
     end
 end
 
+function Base.convert(::Type{duckdb_hugeint}, val::UUID)
+    # base_value = Int128(170141183460469231731687303715884105727)
+    base_value = typemax(Int128)
+    uint_val = UInt128(val)
+    if uint_val > base_value
+        return convert(duckdb_hugeint, Int128(uint_val - base_value - 1))
+    else
+        return convert(duckdb_hugeint, Int128(uint_val) - base_value - 1)
+    end
+end
+
 # DECIMALS
 Base.convert(::Type{Float64}, val::duckdb_decimal) = duckdb_decimal_to_double(val)
-Base.convert(::Type{duckdb_decimal}, val::Float64) = duckdb_double_to_decimal(val)
+Base.convert(::Type{FixedDecimal}, val::duckdb_decimal) = throw(NotImplementedError("FixedDecimal not implemented"))
+Base.convert(::Type{duckdb_decimal}, val::Float64) = throw(NotImplementedError("FixedDecimal not implemented"))
+Base.convert(::Type{duckdb_decimal}, val::FixedDecimal) = throw(NotImplementedError("FixedDecimal not implemented"))
 
 
 
 function Base.convert(::Type{String}, val::Union{duckdb_string_t, duckdb_string_t_ptr})
+    # TODO clean up and make sure it works on all Julia Versions
     if val.length <= STRING_INLINE_LENGTH
         # Is inline string
         if val isa duckdb_string_t

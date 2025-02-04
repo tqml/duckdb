@@ -6,7 +6,7 @@ include("test_logical_types_helper.jl")
 end
 
 
-@testitem "Logical Types" setup=[LogicalTypeSetup] begin
+@testitem "Logical Types" setup = [LogicalTypeSetup] begin
 
     int_duck_types = (
         DuckDB.DUCKDB_TYPE_BOOLEAN,
@@ -70,7 +70,7 @@ end
     @test DuckDB.get_struct_child_name(lt, 3) == "c"
     @test DuckDB.get_struct_child_name(lt, 4) == "d"
     @test DuckDB.get_struct_child_name(lt, 5) == "e"
-    
+
     @test DuckDB.alias(lt) == ""
     DuckDB.set_alias!(lt, "ComplexStruct")
     @test DuckDB.alias(lt) == "ComplexStruct"
@@ -78,23 +78,14 @@ end
 
 
 
+    # Custom Struct: Not implemented by default
     ct = MyStruct(1, 2.0, (1, 2, 3))
-    lt = DuckDB.create_logical_type(typeof(ct))
-    @test lt.handle != C_NULL
-    Base.GC.gc()
-    @test DuckDB.get_type_id(lt) == DuckDB.DUCKDB_TYPE_STRUCT
-    @test DuckDB.is_complex_type(lt) == true
-    @test DuckDB.get_struct_child_count(lt) == 3
-    @test DuckDB.get_struct_child_name(lt, 1) == "a"
-    @test DuckDB.get_struct_child_name(lt, 2) == "b"
-    @test DuckDB.get_struct_child_name(lt, 3) == "c"
-    @test DuckDB.alias(lt) == "JLMyStruct"
-
+    @test_throws DuckDB.NotImplementedException DuckDB.create_logical_type(typeof(ct))
 
     # Test StaticArrays Extension
     S1 = StaticArrays.SVector{10, Int}
-    S2 = StaticArrays.SMatrix{2,2, Int}
-    S3 = StaticArrays.SArray{Tuple{2,2,2}, Int, 3}
+    S2 = StaticArrays.SMatrix{2, 2, Int}
+    S3 = StaticArrays.SArray{Tuple{2, 2, 2}, Int, 3}
     lt1 = DuckDB.create_logical_type(S1)
     lt2 = DuckDB.create_logical_type(S2)
     lt3 = DuckDB.create_logical_type(S3)
@@ -109,27 +100,44 @@ end
     @test DuckDB.get_type_id(DuckDB.get_array_child_type(lt3)) == DuckDB.DUCKDB_TYPE_BIGINT
 end
 
+@testitem "Type Conversions" setup = [LogicalTypeSetup] begin
 
-@testitem "Static Arrays" begin
-    using StaticArrays
-    T = StaticArrays.SArray{Tuple{2,2,2}, Int, 3}
+    id0 = UUID(0)
+    id1 = UUID(1)
+    id_max = UUID(typemax(UInt128))
+    id_max2 = UUID(UInt128(typemax(Int128)))
 
-    N = prod(StaticArrays.Size(T))
-    @show T
+    for id in (id0, id1, id_max, id_max2)
+        db_id = convert(DuckDB.duckdb_hugeint, id)
+        id_out = convert(UUID, db_id)
+        @test id == id_out
+    end
 
-    #@info "is tuple" T <: Tuple
+    # Random checking
+    for i in rand(10_000)
+        id = UUID(rand(UInt128))
+        db_id = convert(DuckDB.duckdb_hugeint, id)
+        id_out = convert(UUID, db_id)
+        @test id == id_out
+    end
 
-    #x = (1.0,2.0,3.0,4.0)
-    #y = convert(T, x)
-    #@show isbits(T)
-    #y = reinterpret(T, x)
-    #@time convert(T, x)
 
-    @time y = Tuple(i for i in 1:N)
-    @time x = T(i for i in 1:N)
 
-    @show x
+    @inferred DuckDB.duckdb_date DuckDB.julia_to_duck_type(Date)
+    @inferred DuckDB.duckdb_time DuckDB.julia_to_duck_type(Time)
+    @inferred DuckDB.duckdb_timestamp DuckDB.julia_to_duck_type(DateTime)
+    @inferred DuckDB.duckdb_interval DuckDB.julia_to_duck_type(Period)
+    @inferred DuckDB.duckdb_interval DuckDB.julia_to_duck_type(Dates.CompoundPeriod)
+    @inferred DuckDB.duckdb_hugeint DuckDB.julia_to_duck_type(UUID)
+    #@inferred DuckDB.duckdb_hugeint DuckDB.julia_to_duck_type(UUID)
+
+
+
+    FixedDecimal{Int16, 2}(1)
+
+
 end
+
 
 
 # @testset failfast = true "Conversions Julia to Internal to Julia: Numerical" begin
@@ -564,115 +572,6 @@ end
 # end
 
 
-@testitem "Conversions Julia to Internal to Julia: Combined Multi Chunk" begin
-    using DuckDB
-    include("test_logical_types_helper.jl")
-    N = 2048
-
-    types = [
-        # Bool,
-        # Int8,
-        # Int16,
-        # Int32,
-        # Int64,
-        # Int128,
-        # UInt8,
-        # UInt16,
-        # UInt32,
-        # UInt64,
-        # UInt128,
-        # Float32,
-        # Float64,
-        # String,
-        # Date,
-        # Time,
-        # DateTime,
-        # Dates.CompoundPeriod,
-        NTuple{10, Int},
-        StaticArrays.SVector{10,Int},
-        StaticArrays.SMatrix{2,2, Int},
-        StaticArrays.SArray{Tuple{2,2,2}, Int, 3},
-        Vector{Int},
-        Vector{Vector{Int}},
-        Vector{Vector{Vector{Int}}},
-        # Union{Missing, Int},
-        # Union{Missing, Vector{Union{Missing, Int}}},
-        # Dict{String, String},
-        # Dict{String, Vector{Int}},
-        # Vector{Vector{Vector{Float64}}},  # Nested Lists
-        Union{String, Int, Float64, Bool},
-        # MyStruct,
-        # Dict{String, MyStruct}, # Write works, but read creates NamedTuple instead of struct
-    ]
-    t_reads = Float64[]
-    t_writes = Float64[]
-    t_baselines = Float64[]
-    for T in types
-        println("Type: ", T)
-        
-
-        if T === Union{String, Int, Float64, Bool}
-            # Make generic?
-            logical_type = DuckDB.create_union_type((String, Int, Float64, Bool))
-            X = Vector{T}([_random_element_union() for i in 1:N])
-            julia_type_in = eltype(X)
-        else
-            X = [_random_element(T, 5) for i in 1:N]
-            julia_type_in = eltype(X)
-            logical_type = DuckDB.create_logical_type(julia_type_in)
-        end
-        chunks = [DuckDB.DataChunk([logical_type]) for _ in 1:10] # 10 chunks
-        DuckDB.set_size.(chunks, N)
-
-        Base.GC.@preserve chunks begin
-
-            println("Write Test: ", T)
-            t_write = @elapsed for chunk in chunks
-                vec = DuckDB.get_vector(chunk, 1)
-                writer = DuckDB.VecWriter(vec, logical_type, julia_type_in, N)
-                sizehint!(writer, N)
-                for i in 1:N
-                    writer[i] = X[i]
-                end
-            end
-
-            t_read = 0.0
-            t_read = @elapsed for chunk in chunks
-                vec = DuckDB.get_vector(chunk, 1)
-                reader = DuckDB.VecReader(vec, logical_type, julia_type_in, N)
-                julia_type_out = DuckDB.julia_eltype(reader)
-                out = Vector{julia_type_in}(undef, N)
-                for i in 1:N
-                    out[i] = reader[i]
-                end
-            end
-
-            if T <: Period || T <: Dates.CompoundPeriod
-                out = [Dates.canonicalize(x) for x in out]
-            end
-
-            @test isequal(X,out)
-            t_baseline = 0.0
-            # if !(T <: Tuple) && !(T <: MyStruct)
-            #     # Tuple not supported
-            #     try
-            #         data = DuckDB.ColumnConversionData(chunks, 1, logical_type, nothing)
-            #         t_baseline = @elapsed DuckDB.convert_column(data)
-            #     catch e
-            #         println("Skipped baseline for type ", T, ", error:", e)
-            #     end
-            # end
-            push!(t_reads, t_read)
-            push!(t_writes, t_write)
-            push!(t_baselines, t_baseline)
-
-            #println("Type: ", T, "\t Read: \t\t", t_read, "\t\t Write: \t\t", t_write, "\t\t Baseline: \t\t", t_baseline)
-        end
-    end
-
-    df = DataFrame(Type = types, Read = t_reads, Write = t_writes, Baseline = t_baselines)
-    PrettyTables.pretty_table(df)
-end
 
 
 @testset "New ScalarFunction" begin
@@ -710,20 +609,23 @@ end
     my_scalar_function = function (x, y)
         return x.a + y.a + x.b + y.b
     end
-    
-    input_types = [NamedTuple{(:a,:b), Tuple{Float64, Float64}}, NamedTuple{(:a,:b), Tuple{Float64, Float64}}]
+
+    input_types = [NamedTuple{(:a, :b), Tuple{Float64, Float64}}, NamedTuple{(:a, :b), Tuple{Float64, Float64}}]
     output_type = Float64
     f2 = DuckDB._create_scalar_function_new("my_scalar_function2", my_scalar_function, input_types, output_type)
 
     con = DBInterface.connect(DuckDB.DB, ":memory:")
     DuckDB.register_scalar_function(con, f2)
 
-    DuckDB.execute(con, """CREATE TABLE test_table AS 
-        SELECT 
-            {'a': random(), 'b': random()} AS x,
-            {'a': random(), 'b': random()} AS y
-        FROM range(1,1_000_000);""")
-    
+    DuckDB.execute(
+        con,
+        """CREATE TABLE test_table AS 
+SELECT 
+    {'a': random(), 'b': random()} AS x,
+    {'a': random(), 'b': random()} AS y
+FROM range(1,1_000_000);"""
+    )
+
 
     DuckDB.execute(con, "SELECT my_scalar_function2(x, y) FROM test_table;")
 

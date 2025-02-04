@@ -2,7 +2,8 @@
 # test_all_types.jl
 
 
-@testset "Test All Types" begin
+@testitem "Test All Types" begin
+    using Dates, DuckDB, FixedPointDecimals, DataFrames, UUIDs
     db = DBInterface.connect(DuckDB.DB)
     con = DBInterface.connect(db)
 

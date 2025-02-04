@@ -25,11 +25,12 @@ macro to create a new scalar function instead of calling this constructor direct
 
 See also [`register_scalar_function`](@ref), [`@create_scalar_function`](@ref)
 """
-mutable struct ScalarFunction
+mutable struct ScalarFunction{N, U, Y}
     handle::duckdb_scalar_function
     name::AbstractString
     parameters::Vector{DataType}
-    return_type::DataType
+    #parameters::Vector{DataType}
+    return_type::Type{Y}
     logical_parameters::Vector{LogicalType}
     logical_return_type::LogicalType
     func::Function
@@ -47,6 +48,11 @@ mutable struct ScalarFunction
         handle = duckdb_create_scalar_function()
         duckdb_scalar_function_set_name(handle, name)
 
+        _parameters = Tuple{parameters...}
+        U = typeof(_parameters)
+        N = length(parameters)
+        Y = return_type
+
         logical_parameters = Vector{LogicalType}()
         for parameter_type in parameters
             push!(logical_parameters, create_logical_type(parameter_type))
@@ -57,7 +63,7 @@ mutable struct ScalarFunction
             duckdb_scalar_function_add_parameter(handle, param.handle)
         end
         duckdb_scalar_function_set_return_type(handle, logical_return_type.handle)
-        result = new(
+        result = new{N, U, Y}(
             handle,
             name,
             parameters,
@@ -73,8 +79,11 @@ mutable struct ScalarFunction
 
         return result
     end
-
 end
+
+input_types(func::ScalarFunction{N, U, Y}) where {N, U, Y} = U
+return_type(func::ScalarFunction{N, U, Y}) where {N, U, Y} = Y
+nparameters(func::ScalarFunction{N, U, Y}) where {N, U, Y} = N
 
 name(func::ScalarFunction) = func.name
 signature(func::ScalarFunction) = string(func.name, "(", join(func.parameters, ", "), ") -> ", func.return_type)
@@ -233,16 +242,18 @@ function _udf_generate_wrapper(func_expr, func_esc)
                 chunk_is_valid = all(all_valid.(validity))
                 result_validity = get_validity(vec)
 
+                writer = VecWriter(vec, $log_return_type_name, $return_type, N)
+
                 for $index_name in 1:N
                     if chunk_is_valid || all(isvalid(v, $index_name) for v in validity)
                         result::$return_type = $call_expr
-
+                        writer[$index_name] = result
                         # Hopefully this optimized away if the type has no missing values
-                        if ismissing(result)
-                            setinvalid(result_validity, $index_name)
-                        else
-                            _udf_assign_result!(result_container, $return_type, vec, result, $index_name)
-                        end
+                        # if ismissing(result)
+                        #     setinvalid(result_validity, $index_name)
+                        # else
+                        #     _udf_assign_result!(result_container, $return_type, vec, result, $index_name)
+                        # end
                     else
                         setinvalid(result_validity, $index_name)
                     end
@@ -384,4 +395,105 @@ end
 function _udf_convert_chunk(::Type{T}, lt::LogicalType, chunk::DataChunk, ix) where {T}
     data = ColumnConversionData((chunk,), ix, lt, nothing)
     return convert_column(data)
+end
+
+
+# %% --- New Implementation ------------------------------------------ #
+
+
+function _udf_scalar_wrapper(
+    info::DuckDB.duckdb_function_info,
+    input::DuckDB.duckdb_data_chunk,
+    output::DuckDB.duckdb_vector
+)
+    f::ScalarFunction = unsafe_pointer_to_objref(DuckDB.duckdb_scalar_function_get_extra_info(info))
+    try
+        chunk = DataChunk(input, false)
+        N = Int(get_size(chunk))
+        Np = nparameters(f)
+        vec = Vec(output)
+        _input_types = input_types(f)
+        _return_type = return_type(f)
+        _udf_wrapper_exec(f, vec, chunk, N, _input_types, _return_type)
+    catch e
+        DuckDB.duckdb_scalar_function_set_error(info, "Exception in " * signature(f) * ": " * get_exception_info())
+    end
+end
+
+function _udf_wrapper_exec(
+    f::ScalarFunction{Np, U, Y},
+    vec::Vec,
+    chunk::DataChunk,
+    N,
+    _input_types::Type{U},
+    _return_type::Type{Y}
+) where {Np, U, Y}
+
+    N_cols = length(f.parameters)
+    N_cols_chunk = get_column_count(chunk)
+    @assert N_cols == N_cols_chunk "Number of columns in chunk does not match the number of parameters"
+    @assert N_cols == Np "Number of columns in chunk does not match the number of parameters"
+    input_vecs = Tuple(get_vector(chunk, i) for i in 1:Np)
+    readers = Tuple(
+        VecReader(input_vec, lt, T, N) for (input_vec, lt, T) in zip(input_vecs, f.logical_parameters, f.parameters)
+    )
+    writer = VecWriter(vec, f.logical_return_type, f.return_type, N)
+    for i in 1:N
+        #args = [readers[j][i] for j in 1:N_cols]
+        result = f.func(readers[1][i], readers[2][i])
+        #result = f.func((buf[j][1] for j in 1:Np)...)
+        writer[i] = result
+    end
+end
+
+
+function _udf_create_scalar_function_exec(func_expr, input_types::Expr, return_type::Symbol)
+
+    @show func_expr input_types return_type
+
+    @assert input_types.head == :vect || input_types.head == :tuple "input_types must be a tuple or a vector"
+    input_types_inner = [t for t in input_types.args]
+    # Create VecReader Expression: VecReader(input_vec, lt, T, N)
+    reader_constructors = [
+        Expr(:call, :VecReader, :(input_vec[$i]), :(logical_parameters[$i]), T, :N) for
+        (i, T) in enumerate(input_types_inner)
+    ]
+    reader_def = Expr(:tuple, reader_constructors...)
+    call_expr = Expr(:call, :(func), (:(reader[$i]) for i in 1:length(input_types_inner))...)
+
+
+    quote
+        function _udf_wrapper_exec(f::ScalarFunction, vec::Vec, chunk::DataChunk, N, _input_types, _return_type)
+            logical_parameters = f.logical_parameters
+            N_cols = length(f.parameters)
+            N_cols_chunk = get_column_count(chunk)
+            @assert N_cols == N_cols_chunk "Number of columns in chunk does not match the number of parameters"
+            @assert N_cols == Np "Number of columns in chunk does not match the number of parameters"
+            input_vecs = Tuple(get_vector(chunk, i) for i in 1:Np)
+            readers = $reader_def
+            writer = VecWriter(vec, f.logical_return_type, $return_type, N)
+            func = $(esc(func_expr)) # IMPORTANT, escape because it is not a function inside the DuckDB module
+            for i in 1:N
+                result::Union{Missing, $return_type} = $call_expr
+                writer[i] = result
+            end
+        end
+    end
+end
+
+
+function _create_scalar_function_new(name::AbstractString, func::Function, input_types, return_type)
+    logical_parameters = [create_logical_type(T) for T in input_types]
+    logical_return_type = create_logical_type(return_type)
+    wrapper = @cfunction(
+        _udf_scalar_wrapper,
+        Cvoid,
+        (DuckDB.duckdb_function_info, DuckDB.duckdb_data_chunk, DuckDB.duckdb_vector)
+    )
+
+    #internal_wrapper = _udf_create_scalar_function_exec(func, input_types, return_type)
+
+    f = ScalarFunction(name, input_types, return_type, func, _udf_scalar_wrapper)
+    duckdb_scalar_function_set_function(f.handle, wrapper)
+    return f
 end

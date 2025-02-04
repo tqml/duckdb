@@ -65,6 +65,23 @@ function _close_connection(con::Connection)
     return
 end
 
+
+"""Interrupts a running query on the connection."""
+interrupt!(con::Connection) = duckdb_interrupt(con.handle)
+
+function query_progress(con::Connection)
+    result::duckdb_query_progress_type = duckdb_query_progress(con.handle)
+    # TODO it returns '-1' if no progress
+    if result.percentage == -1
+        @debug "No progress"
+        return nothing # no progress
+    end
+    return result
+end
+
+
+
+
 """
 A DuckDB database object.
 

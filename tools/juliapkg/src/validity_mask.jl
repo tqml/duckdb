@@ -7,7 +7,8 @@ struct ValidityMask
     data::Vector{UInt64}
 end
 
-ValidityMask(data::Vector{UInt64}) = ValidityMask(true, true, data)
+# TODO Added for backwards compatibility
+ValidityMask(data::Vector{UInt64}) = ValidityMask(_all_valid(data), true, data)
 
 const BITS_PER_VALUE = 64;
 

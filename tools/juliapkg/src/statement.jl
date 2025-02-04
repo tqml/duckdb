@@ -75,3 +75,8 @@ function bind_parameters(stmt::Stmt, params::DBInterface.StatementParams)
         i += 1
     end
 end
+
+
+function get_type(stmt::Stmt)
+    return duckdb_prepared_statement_type(stmt.handle)
+end

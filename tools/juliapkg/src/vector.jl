@@ -162,6 +162,8 @@ VecReader(vec::Vec, logical_type::LogicalType, ::Type{Union{Missing, T}}, N) whe
     VecReader(vec, logical_type, T, N)
 VecReader(vec::Vec, logical_type::LogicalType, ::Type{T}, N) where {T <: Integer} =
     _create_vecreader_simple(vec, logical_type, T, N)
+VecReader(vec::Vec, logical_type::LogicalType, ::Type{T}, N) where {T <: UUID} =
+    _create_vecreader_simple(vec, logical_type, T, N)
 VecReader(vec::Vec, logical_type::LogicalType, ::Type{T}, N) where {T <: AbstractFloat} =
     _create_vecreader_simple(vec, logical_type, T, N)
 VecReader(vec::Vec, logical_type::LogicalType, ::Type{T}, N) where {T <: String} =
@@ -419,7 +421,7 @@ mutable struct VecWriter{T, D, F <: Function}
     julia_type::Type{T}
     setindex_func::F
     validity_mask::ValidityMask
-    data::D
+    data::D # Internal data -> e.g. array of vector data or other writers for complex types
 end
 
 
@@ -455,6 +457,7 @@ VecWriter(vec::Vec, logical_type::LogicalType, ::Type{T}, N) where {T <: DateTim
     _create_vecwriter_simple(vec, logical_type, T, N)
 VecWriter(vec::Vec, logical_type::LogicalType, ::Type{T}, N) where {T <: Union{Period, Dates.CompoundPeriod}} =
     _create_vecwriter_simple(vec, logical_type, T, N)
+VecWriter(vec::Vec, logical_type::LogicalType, ::Type{UUID}, N) = _create_vecwriter_simple(vec, logical_type, UUID, N)
 
 function VecWriter(vec::Vec, logical_type::LogicalType, ::Type{T}, N = VECTOR_SIZE) where {T}
     # if isstructtype(T)
@@ -508,7 +511,7 @@ end
 
 function _create_vecwriter_simple(vec::Vec, logical_type::LogicalType, ::Type{T}, N) where {T}
     type_id = get_type_id(logical_type)
-    #internal_type = duckdb_type_to_internal_type(type_id)
+    internal_type = duckdb_type_to_internal_type(type_id)
     internal_type_static = julia_to_duck_type(T)
     data = get_array(vec, internal_type_static, N)
     setindex_func = setindex_simple!
@@ -523,7 +526,10 @@ function _create_vecwriter_string(vec::Vec, logical_type::LogicalType, ::Type{T}
     return VecWriter(vec, Int(N), logical_type, T, setindex_func, validity_mask, data)
 end
 
-setindex_simple!(w::VecWriter, v, i) = (w.data[i] = v; nothing)
+function setindex_simple!(w::VecWriter, v, i)
+    w.data[i] = v
+    return nothing
+end
 setindex_string!(v::VecWriter, s::AbstractString, i) = assign_string_element(v.data, i, s)
 
 
@@ -602,21 +608,12 @@ function _create_vecwriter_struct(vec::Vec, logical_type::LogicalType, ::Type{T}
         VecWriter(struct_child(vec, k), get_struct_child_type(logical_type, k), fieldtype(T, name), N) for
         (k, name) in enumerate(names)
     )
-    # writers = Tuple(VecWriter(
-    #         struct_child(vec, k), 
-    #         get_struct_child_type(logical_type, k), 
-    #         types_tuple[k],
-    #         N) 
-    #     for k in 1:Nf
-    # )
 
     data = NamedTuple{names}(writers)
     setindex_func = setindex_struct!
     validity_mask = get_validity(vec, N)
     return VecWriter(vec, Int(N), logical_type, T, setindex_func, validity_mask, data)
 end
-
-#function setindex_struct!(data::NamedTuple{names}, value, index) where {names}
 
 _namedtuple_names(::Type{NamedTuple{names}}) where {names} = names
 _namedtuple_names(::NamedTuple{names}) where {names} = names
@@ -810,6 +807,12 @@ function _setindex_union(_writer::VecWriter, value::T, index) where {T}
     return element_writer[index] = value
 end
 
+# %% --- Enum ------------------------------------------ #
+
+function _create_vecwriter_enum(vec::Vec, logical_type::LogicalType, ::Type{T}, N) where {T}
+    internal_type_id = get_internal_type_id(logical_type)
+    return enum_dict = get_enum_dictionary(logical_type)
+end
 
 
 # %% --- Writer Util ------------------------------------------ #

@@ -28,3 +28,9 @@ end
     Z = [Dates.canonicalize(convert(julia_type_out, y)) for y in Y]
     @test isequal(X, Z)
 end
+
+
+@testset "Check Type Stability" begin
+
+    @code_warntype convert(DuckDB.duckdb_interval, Dates.CompoundPeriod(Day(1)))
+end

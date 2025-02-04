@@ -3,7 +3,9 @@ module DuckDBStaticArraysExt
 using StaticArrays
 using DuckDB
 
-
+# %% --------------------------------------------------------
+#        Logical Types
+#------------------------------------------------------------
 
 """
     DuckDB.create_logical_type(::Type{V}) where {V <: StaticArrays.SArray}
@@ -11,6 +13,7 @@ using DuckDB
 Creates a logical type for a StaticArray type `V` where `V` is a subtype of `StaticArrays.SArray`.
 """
 function DuckDB.create_logical_type(::Type{V}) where {V <: StaticArrays.SArray}
+    # TODO Make this recursive -> Array of Array of Array of ...
     S = StaticArrays.Size(V)
     T = eltype(V)
     N = prod(S) # Number of elements in the static array
@@ -21,6 +24,9 @@ function DuckDB.create_logical_type(::Type{V}) where {V <: StaticArrays.SArray}
     end
 end
 
+# %% --------------------------------------------------------
+#        VecReader and VecWriter
+#------------------------------------------------------------
 
 """
     DuckDB.VecWriter(vec, logical_type, ::Type{V}, N) where {V <: StaticArrays.SArray}

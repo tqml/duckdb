@@ -36,6 +36,10 @@ include("table_function.jl")
 include("scalar_function.jl")
 include("replacement_scan.jl")
 include("table_scan.jl")
+include("profiling.jl")
 include("old_interface.jl")
+
+version() = VersionNumber(unsafe_string(duckdb_library_version()))
+
 
 end # module

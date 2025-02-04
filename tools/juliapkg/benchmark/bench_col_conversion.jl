@@ -28,6 +28,7 @@ _random_element(::Type{Dates.CompoundPeriod}, size) = random_compound_period()
 _random_element(::Type{NTuple{N, T}}, size) where {N, T} = Tuple(_random_element(T, size) for _ in 1:N)
 _random_element(::Type{Vector{T}}, size) where {T} = [_random_element(T, size) for _ in 1:size]
 _random_element(::Type{MyStruct}, size) = MyStruct(rand(Int), rand(), _random_element(NTuple{3, Int}, size))
+_random_element(::Type{Dict{K, V}}, size) where {K,V} = Dict(s => _random_element(V, size) for s in unique([_random_element(K, size) for j in 1:size]))
 
 
 
@@ -58,8 +59,17 @@ types = [
     DateTime,
     Dates.CompoundPeriod,
     NTuple{10, Int},
+    StaticArrays.SVector{10,Int},
+    StaticArrays.SMatrix{2,2, Int},
+    StaticArrays.SArray{Tuple{2,2,2}, Int, 3},
     Vector{Int},
+    Vector{Vector{Int}},
+    Vector{Vector{Vector{Int}}},
     #MyStruct
+    Dict{String, Int},
+    Dict{String, String},
+    Dict{String, Vector{Int}},
+    Vector{Vector{Vector{Float64}}},  # Nested Lists
 ]
 
 
@@ -68,13 +78,14 @@ base_example = function()
     N = 2048
     T = Int64
     X::Vector{T} = [T(rand(T)) for i in 1:N]
+    Y = [(a=rand(Int), b=rand()) for i in 1:N]
     julia_type_in = eltype(X)
     logical_type = DuckDB.create_logical_type(julia_type_in)
     chunk = DuckDB.DataChunk([logical_type])
     DuckDB.set_size(chunk, N)
     vec = DuckDB.get_vector(chunk, 1)
     writer = DuckDB.VecWriter(vec, logical_type, T, N)
-
+    reader = DuckDB.VecReader(vec, logical_type, T, N)
     loop_func = (writer, X) -> begin
         local N = length(X)
         for i in 1:N
@@ -90,7 +101,7 @@ for T in types
     julia_type_in = eltype(X)
     logical_type = DuckDB.create_logical_type(julia_type_in)
 
-    chunks = [DuckDB.DataChunk([logical_type]) for _ in 1:1] # 10 chunks
+    chunks = [DuckDB.DataChunk([logical_type]) for _ in 1:10] # 10 chunks
     DuckDB.set_size.(chunks, N)
 
     Base.GC.@preserve chunks begin
@@ -124,22 +135,22 @@ for T in types
         end
 
         # Benchmark Read
+        out = Array{julia_type_in}(undef, N)
         SUITE["ColumnConversion"][read_key_vec] = @benchmarkable begin
             for chunk in $chunks
                 vec = DuckDB.get_vector(chunk, 1)
                 reader = DuckDB.VecReader(vec, $logical_type, $julia_type_in, $N)
                 T_out = DuckDB.julia_eltype(reader)
-                out = Array{$julia_type_in}(undef, N)
                 #out = Array{T_out}(undef, N)
                 for i in 1:$N
-                    #out[i] = reader[i]
-                    out[i] = reader.conversion_func(reader.getindex_func(reader.data, i))
+                    $out[i] = reader[i]
+                    #$out[i] = reader.conversion_func(reader.getindex_func(reader.data, i))
                 end
             end
         end
 
         # Benchmark ColumnConversion
-        if !(T <: Tuple) && !(T <: MyStruct)
+        if !(T <: Tuple) && !(T <: MyStruct) && !(T <:  StaticArrays.SArray)
             # Tuple not supported
             SUITE["ColumnConversion"][read_key_col] = @benchmarkable begin
                 data = DuckDB.ColumnConversionData($chunks, 1, $logical_type, nothing)

@@ -60,6 +60,8 @@ end
 
 
 # Missing, Any
+create_logical_type(::Type{T}) where {T} =
+    throw(NotImplementedException(string("Unsupported type for create_logical_type: ", T)))
 create_logical_type(::Type{Union{Missing, T}}) where {T} = create_logical_type(T)
 create_logical_type(::Type{Any}) = throw(NotImplementedException("Unsupported type for create_logical_type: Any"))
 
@@ -83,6 +85,8 @@ create_logical_type(::Type{T}) where {T <: DateTime} = DuckDB.LogicalType(DuckDB
 create_logical_type(::Type{T}) where {T <: Period} = DuckDB.LogicalType(DuckDB.DUCKDB_TYPE_INTERVAL)
 create_logical_type(::Type{T}) where {T <: Dates.CompoundPeriod} = DuckDB.LogicalType(DuckDB.DUCKDB_TYPE_INTERVAL)
 create_logical_type(::Type{T}) where {T <: AbstractString} = DuckDB.LogicalType(DuckDB.DUCKDB_TYPE_VARCHAR)
+create_logical_type(::Type{UUID}) = DuckDB.LogicalType(DuckDB.DUCKDB_TYPE_UUID)
+
 function create_logical_type(::Type{T}) where {T <: FixedDecimal}
     int_type = T.parameters[1]
     width = 0
@@ -168,24 +172,24 @@ function get_struct_child_type(type::LogicalType, index)
     return LogicalType(duckdb_struct_type_child_type(type.handle, index))
 end
 
-function create_logical_type(::Type{T}) where {T}
-    if !isstructtype(T)
-        throw(NotImplementedException("Unsupported type for create_logical_type: $T"))
-    end
+# function create_logical_type(::Type{T}) where {T}
+#     if !isstructtype(T)
+#         throw(NotImplementedException("Unsupported type for create_logical_type: $T"))
+#     end
 
-    names = fieldnames(T)
-    types = fieldtypes(T)
-    N = length(names)
-    member_names = [string(name) for name in names]
-    member_types = [create_logical_type(type) for type in types]
-    Base.GC.@preserve member_types begin
-        member_type_ptrs = [member.handle for member in member_types]
-        struct_handle = duckdb_create_struct_type(member_type_ptrs, member_names, N)
-        struct_type_name = "JL" * string(nameof(T))
-        duckdb_logical_type_set_alias(struct_handle, struct_type_name)
-        return DuckDB.LogicalType(struct_handle)
-    end
-end
+#     names = fieldnames(T)
+#     types = fieldtypes(T)
+#     N = length(names)
+#     member_names = [string(name) for name in names]
+#     member_types = [create_logical_type(type) for type in types]
+#     Base.GC.@preserve member_types begin
+#         member_type_ptrs = [member.handle for member in member_types]
+#         struct_handle = duckdb_create_struct_type(member_type_ptrs, member_names, N)
+#         struct_type_name = "JL" * string(nameof(T))
+#         duckdb_logical_type_set_alias(struct_handle, struct_type_name)
+#         return DuckDB.LogicalType(struct_handle)
+#     end
+# end
 
 function create_logical_type(::Type{NamedTuple{names, T}}) where {names, T <: Tuple}
     n = length(names)

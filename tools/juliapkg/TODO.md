@@ -1,0 +1,7 @@
+# Deprecated Symbols
+
+duckdb_result_is_streaming
+duckdb_pending_prepared_streaming
+duckdb_stream_fetch_chunk
+duckdb_result_chunk_count
+duckdb_result_get_chunk
